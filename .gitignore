@@ -1,0 +1,62 @@
+# Secrets and environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyd
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Tool caches
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Test and coverage outputs
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+
+# Runtime files
+*.log
+*.sqlite3
+*.deb
+*.cap
+*.pcap
+sessions/*.sqlite3
+sessions/*.log
+reports/output/
+output/
+
+# Local tooling and editor state
+.agents/
+.claude/
+.codex
+.mcp.json
+.proflupinmind-tools/
+hs/
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,18 @@
+ai:
+  model: claude-sonnet-4-6
+  max_tokens: 2048
+  max_steps: 15
+
+executor:
+  default_timeout: 300
+  dangerous_timeout: 120
+
+ui:
+  dry_run: false
+  stream_output: true
+  max_output_lines: 200
+
+safety:
+  require_scope: true
+  confirm_dangerous: true
+  read_only_mode: false

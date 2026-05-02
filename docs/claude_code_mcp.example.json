@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "proflupinmind": {
+      "type": "stdio",
+      "command": "/home/kali/Desktop/kaliwithAI/.venv/bin/python",
+      "args": [
+        "/home/kali/Desktop/kaliwithAI/mcp_server.py"
+      ],
+      "env": {
+        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+      }
+    }
+  }
+}

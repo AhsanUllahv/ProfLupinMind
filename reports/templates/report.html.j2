@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>ProfLupinMind Report - {{ session.target }}</title>
+  <style>
+    :root {
+      --ink: #18212f;
+      --muted: #5f6b7a;
+      --line: #d8dee8;
+      --panel: #f5f7fa;
+      --critical: #a41523;
+      --high: #c2410c;
+      --medium: #a16207;
+      --low: #1d4ed8;
+      --info: #475569;
+    }
+    body {
+      color: var(--ink);
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 13px;
+      line-height: 1.45;
+      margin: 36px;
+    }
+    h1, h2, h3 {
+      margin: 0 0 10px;
+    }
+    h1 {
+      font-size: 30px;
+    }
+    h2 {
+      border-bottom: 1px solid var(--line);
+      font-size: 19px;
+      margin-top: 28px;
+      padding-bottom: 6px;
+    }
+    h3 {
+      color: var(--muted);
+      font-size: 15px;
+      margin-top: 18px;
+    }
+    .meta {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin: 18px 0 24px;
+      padding: 14px;
+    }
+    .label {
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .value {
+      font-weight: 700;
+      margin-top: 2px;
+    }
+    table {
+      border-collapse: collapse;
+      margin: 12px 0;
+      width: 100%;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 7px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: var(--panel);
+    }
+    code {
+      background: #eef2f7;
+      border-radius: 3px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      padding: 1px 4px;
+      word-break: break-word;
+    }
+    .badge {
+      border-radius: 3px;
+      color: white;
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 6px;
+    }
+    .CRITICAL { background: var(--critical); }
+    .HIGH { background: var(--high); }
+    .MEDIUM { background: var(--medium); }
+    .LOW { background: var(--low); }
+    .INFO { background: var(--info); }
+    .muted {
+      color: var(--muted);
+    }
+    .finding {
+      border-left: 4px solid var(--line);
+      margin: 8px 0;
+      padding: 8px 10px;
+    }
+    @page {
+      margin: 22mm;
+    }
+  </style>
+</head>
+<body>
+  <h1>ProfLupinMind Assessment Report</h1>
+  <p class="muted">Generated from session <code>{{ session.id }}</code></p>
+
+  <section class="meta">
+    <div><div class="label">Target</div><div class="value">{{ session.target }}</div></div>
+    <div><div class="label">Overall Risk</div><div class="value">{{ risk_rating }}</div></div>
+    <div><div class="label">Status</div><div class="value">{{ session.status }}</div></div>
+    <div><div class="label">Updated</div><div class="value">{{ session.updated_at }}</div></div>
+  </section>
+
+  <h2>Executive Summary</h2>
+  <p>{{ executive_summary }}</p>
+
+  <h2>Severity Breakdown</h2>
+  <table>
+    <thead><tr><th>Severity</th><th>Count</th></tr></thead>
+    <tbody>
+      {% for severity in severity_order %}
+      <tr><td><span class="badge {{ severity }}">{{ severity }}</span></td><td>{{ severity_counts.get(severity, 0) }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <h2>Findings</h2>
+  {% if findings %}
+    {% for severity in severity_order %}
+      {% if grouped_findings.get(severity) %}
+        <h3>{{ severity }}</h3>
+        {% for finding in grouped_findings[severity] %}
+          <div class="finding">
+            <strong>{{ finding.type }}</strong> via <code>{{ finding.tool }}</code><br>
+            {{ finding.detail }}
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <p>No findings were recorded for this session.</p>
+  {% endif %}
+
+  <h2>CVE Table</h2>
+  {% if cves %}
+  <table>
+    <thead><tr><th>CVE</th><th>Severity</th><th>Source</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for cve in cves %}
+      <tr><td>{{ cve.id }}</td><td>{{ cve.severity }}</td><td>{{ cve.source }}</td><td>{{ cve.detail }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>No CVEs were recorded for this session.</p>
+  {% endif %}
+
+  <h2>Remediation Plan</h2>
+  {% if remediations %}
+  <table>
+    <thead><tr><th>Severity</th><th>Finding</th><th>Recommendation</th></tr></thead>
+    <tbody>
+      {% for item in remediations %}
+      <tr><td>{{ item.severity }}</td><td>{{ item.finding }}</td><td>{{ item.recommendation }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>No remediation items were generated because no findings were recorded.</p>
+  {% endif %}
+
+  <h2>Command Timeline</h2>
+  {% if commands %}
+  <table>
+    <thead><tr><th>#</th><th>Time</th><th>Tool</th><th>Exit</th><th>Duration</th><th>Flags</th><th>Command</th></tr></thead>
+    <tbody>
+      {% for cmd in commands %}
+      <tr>
+        <td>{{ loop.index }}</td>
+        <td>{{ cmd.created_at }}</td>
+        <td>{{ cmd.tool }}</td>
+        <td>{{ cmd.exit_code if cmd.exit_code is not none else "blocked" }}</td>
+        <td>{{ "%.1f"|format(cmd.duration or 0) }}s</td>
+        <td>{{ "blocked " if cmd.blocked else "" }}{{ "dangerous " if cmd.dangerous else "" }}{{ "timeout" if cmd.timed_out else "" }}</td>
+        <td><code>{{ cmd.command }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>No commands were recorded for this session.</p>
+  {% endif %}
+</body>
+</html>
