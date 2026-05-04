@@ -351,6 +351,47 @@ def _parse_dir_enum(tool: str, output: str, target: str) -> ParseResult:
                 ))
             continue
 
+        # feroxbuster/newer tools: "200 GET 10l 20w 123c https://target/admin"
+        status_url = re.search(r'\b(\d{3})\s+\w+\s+.*?(https?://\S+)', line)
+        if status_url:
+            status, url = status_url.groups()
+            if int(status) in (200, 201, 204, 301, 302, 307, 401, 403):
+                result.urls.append(url)
+                result.findings.append(Finding(
+                    tool=tool, type="DIR_FOUND",
+                    detail=f"[{status}] {url}",
+                    severity="MEDIUM" if int(status) in (200, 201) else "INFO"
+                ))
+            continue
+
+        # ffuf text: "admin [Status: 200, Size: 1234, Words: 10, Lines: 3]"
+        ffuf_text = re.match(r'(\S+)\s+\[Status:\s*(\d+),', line)
+        if ffuf_text:
+            path, status = ffuf_text.groups()
+            url = path if path.startswith("http") else f"{target.rstrip('/')}/{path.lstrip('/')}"
+            if int(status) in (200, 201, 204, 301, 302, 307, 401, 403):
+                result.urls.append(url)
+                result.findings.append(Finding(
+                    tool=tool, type="DIR_FOUND",
+                    detail=f"[{status}] {url}",
+                    severity="MEDIUM" if int(status) in (200, 201) else "INFO"
+                ))
+            continue
+
+        # dirsearch: "[200] - 1KB - /admin"
+        dirsearch_text = re.match(r'\[(\d{3})\]\s+-\s+.*?\s+-\s+(\S+)', line)
+        if dirsearch_text:
+            status, path = dirsearch_text.groups()
+            url = path if path.startswith("http") else f"{target.rstrip('/')}/{path.lstrip('/')}"
+            if int(status) in (200, 201, 204, 301, 302, 307, 401, 403):
+                result.urls.append(url)
+                result.findings.append(Finding(
+                    tool=tool, type="DIR_FOUND",
+                    detail=f"[{status}] {url}",
+                    severity="MEDIUM" if int(status) in (200, 201) else "INFO"
+                ))
+            continue
+
         # Generic URL extraction as fallback
         for url in _extract_urls(line):
             if url not in result.urls:
@@ -627,9 +668,77 @@ def _parse_whatweb(tool: str, output: str, target: str) -> ParseResult:
 
 def _parse_wpscan(tool: str, output: str, target: str) -> ParseResult:
     result = ParseResult()
+
+    # Try JSON output first (wpscan --format json)
+    stripped = output.strip()
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+
+            # WordPress version
+            version_info = data.get("version") or {}
+            wp_ver = version_info.get("number", "")
+            if wp_ver:
+                result.findings.append(Finding(
+                    tool=tool, type="WP_VERSION",
+                    detail=f"WordPress {wp_ver}",
+                    severity="INFO"
+                ))
+            for vuln in version_info.get("vulnerabilities", []):
+                title = vuln.get("title", "")
+                refs = vuln.get("references", {})
+                cves = refs.get("cve", []) if isinstance(refs, dict) else []
+                for cve in cves:
+                    cve_id = cve if cve.upper().startswith("CVE") else f"CVE-{cve}"
+                    result.cves.append(cve_id)
+                sev = "CRITICAL" if any(w in title.lower() for w in ("rce", "remote code", "unauthenticated")) else "HIGH"
+                result.findings.append(Finding(
+                    tool=tool, type="WP_VERSION_VULN",
+                    detail=f"{title} (fixed: {vuln.get('fixed_in', 'N/A')})",
+                    severity=sev
+                ))
+
+            # Plugins
+            for slug, plugin in (data.get("plugins") or {}).items():
+                for vuln in plugin.get("vulnerabilities", []):
+                    title = vuln.get("title", slug)
+                    refs = vuln.get("references", {})
+                    for cve in (refs.get("cve", []) if isinstance(refs, dict) else []):
+                        result.cves.append(cve if cve.upper().startswith("CVE") else f"CVE-{cve}")
+                    sev = "CRITICAL" if any(w in title.lower() for w in ("rce", "injection", "unauthenticated")) else "HIGH"
+                    result.findings.append(Finding(
+                        tool=tool, type="WP_PLUGIN_VULN",
+                        detail=f"{slug}: {title}",
+                        severity=sev
+                    ))
+
+            # Users
+            for username in (data.get("users") or {}):
+                result.findings.append(Finding(
+                    tool=tool, type="WP_USER",
+                    detail=f"User: {username}",
+                    severity="MEDIUM"
+                ))
+
+            # Interesting findings
+            for item in (data.get("interesting_findings") or []):
+                entries = item.get("interesting_entries", [])
+                for cve in _extract_cves(str(entries)):
+                    result.cves.append(cve)
+                if entries:
+                    result.findings.append(Finding(
+                        tool=tool, type="WP_INTERESTING",
+                        detail=str(entries)[:300],
+                        severity="INFO"
+                    ))
+
+            return result
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    # Text format fallback
     for line in output.splitlines():
         line = line.strip()
-        # WordPress version
         ver_match = re.search(r'WordPress version ([\d.]+)', line, re.IGNORECASE)
         if ver_match:
             result.findings.append(Finding(
@@ -637,8 +746,6 @@ def _parse_wpscan(tool: str, output: str, target: str) -> ParseResult:
                 detail=f"WordPress {ver_match.group(1)}",
                 severity="INFO"
             ))
-
-        # Vulnerable plugin / theme
         if re.search(r'\[!\]|vulnerability|vulnerable|outdated', line, re.IGNORECASE):
             sev = "HIGH" if any(w in line.lower() for w in ("critical", "rce", "injection", "xss")) else "MEDIUM"
             result.findings.append(Finding(
@@ -646,12 +753,8 @@ def _parse_wpscan(tool: str, output: str, target: str) -> ParseResult:
                 detail=line[:300],
                 severity=sev
             ))
-
-        # CVEs
         for cve in _extract_cves(line):
             result.cves.append(cve)
-
-        # Users
         user_match = re.search(r'User(name)?:\s+(\S+)', line, re.IGNORECASE)
         if user_match:
             result.findings.append(Finding(
@@ -899,8 +1002,51 @@ def _parse_trivy(tool: str, output: str, target: str) -> ParseResult:
 
 def _parse_checkov(tool: str, output: str, target: str) -> ParseResult:
     result = ParseResult()
+
+    # Try JSON output first (checkov -o json)
+    stripped = output.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            data = json.loads(stripped)
+            # checkov may output a list when multiple frameworks run
+            if isinstance(data, list):
+                items = data
+            else:
+                items = [data]
+
+            for item in items:
+                results_block = item.get("results", item)
+                failed = results_block.get("failed_checks", [])
+                summary = item.get("summary", {})
+
+                for check in failed:
+                    check_id   = check.get("check_id", "UNKNOWN")
+                    check_name = check.get("check_name", "")
+                    resource   = check.get("resource", "")
+                    file_path  = check.get("file_path", "")
+                    sev = "HIGH" if any(w in check_name.lower() for w in (
+                        "public", "encrypt", "iam", "secret", "admin", "root", "password"
+                    )) else "MEDIUM"
+                    result.findings.append(Finding(
+                        tool=tool, type="IAC_MISCONFIGURATION",
+                        detail=f"{check_id}: {check_name} | {resource} ({file_path})",
+                        severity=sev
+                    ))
+
+                passed = summary.get("passed", 0)
+                failed_count = summary.get("failed", 0)
+                if passed or failed_count:
+                    result.findings.append(Finding(
+                        tool=tool, type="IAC_SUMMARY",
+                        detail=f"passed={passed} failed={failed_count}",
+                        severity="INFO"
+                    ))
+            return result
+        except (json.JSONDecodeError, AttributeError):
+            pass
+
+    # Text fallback
     for line in output.splitlines():
-        # "FAILED for resource: aws_s3_bucket.example - Check: CKV_AWS_18"
         m = re.search(r'FAILED.*?Check:\s*(CKV_\w+)', line, re.IGNORECASE)
         if m:
             check_id = m.group(1)

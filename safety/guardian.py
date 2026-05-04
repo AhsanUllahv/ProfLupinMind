@@ -88,7 +88,7 @@ class Guardian:
                     violations=violations,
                 )
 
-        registry_info = get_tool(tool)
+        registry_info = get_tool(tool) or {}
         registry_dangerous = bool(registry_info.get("dangerous", False))
         category = registry_info.get("category", "")
         pattern_dangerous = _matches_any(command, DANGEROUS_PATTERNS)

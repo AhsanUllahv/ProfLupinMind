@@ -45,11 +45,17 @@ async def _kill_process_group(process: asyncio.subprocess.Process) -> None:
 async def pty_execute(
     command: str,
     on_line: Optional[Callable[[str], None]] = None,
+    on_chunk: Optional[Callable[[bytes], None]] = None,
     on_start: Optional[Callable[[int], None]] = None,
     on_finish: Optional[Callable[[int, int], None]] = None,
     timeout: int = 300,
 ) -> ExecutionResult:
-    """Run a command inside a pseudo-terminal so interactive tools (wifite, etc.) work."""
+    """Run a command inside a pseudo-terminal so interactive tools (wifite, etc.) work.
+
+    on_chunk receives raw PTY bytes (ANSI codes, CR, color) before any processing —
+    use this to forward true terminal output to a live viewer.
+    on_line receives ANSI-stripped complete lines — use this for structured parsing.
+    """
     start = time.time()
     output_lines: list[str] = []
     timed_out = False
@@ -96,6 +102,8 @@ async def pty_execute(
                 if not chunk:
                     break
                 saw_data = True
+                if on_chunk:
+                    on_chunk(chunk)
                 buf += chunk.replace(b"\r", b"\n")
                 _emit_complete_lines()
             except BlockingIOError:

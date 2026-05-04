@@ -1,18 +1,27 @@
-# ProfLupinMind MCP Setup
+# ProfLupinMind MCP Setup for Claude Code in VS Code
 
-Primary setup target: local SSE MCP usage with `mcp_server.py`.
+This project is configured for one MCP client: Claude Code running in VS Code.
 
-## Components
+## Architecture
 
-- `mcp_server.py` — FastMCP server and tool surface
-- `proflupinmind_api.py` — Flask backend for command execution
-- `proflupinmind_client.py` — API client used by MCP layer
-- `main.py` — alias to `mcp_server.main()`
-
-## Current ports
-
-- MCP SSE: `127.0.0.1:8890`
-- Flask API: `127.0.0.1:8887`
+```text
+Claude Code in VS Code
+        |
+        v
+.mcp.json project config
+        |
+        v
+mcp_server.py --transport stdio
+        |
+        v
+registered tools + workflows + safety checks
+        |
+        v
+local Kali/Linux commands
+        |
+        v
+sessions, findings, reports
+```
 
 ## Install
 
@@ -23,55 +32,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Optional `.env`:
+## Claude Code Configuration
 
-```env
-ANTHROPIC_API_KEY=your_key_here
+Claude Code reads the project-scoped MCP configuration from:
+
+```text
+/home/kali/Desktop/kaliwithAI/.mcp.json
 ```
 
-## Run
-
-```bash
-python3 -u mcp_server.py --transport sse --port 8890
-```
-
-Equivalent alias:
-
-```bash
-python3 -u main.py --transport sse --port 8890
-```
-
-## Startup output order
-
-1. Custom logo/banner
-2. MCP startup card
-3. Flask + werkzeug + API client connection lines
-
-This ordering is intentional in current code (`_init_api_backend()` is called in `main()` after banner/card printing).
-
-## Logo controls
-
-- `PROFLUPINMIND_LOGO_MODE=auto|chafa|static|off` (default `auto`)
-- `PROFLUPINMIND_LOGO_PATH` default: `assets/logo-lines-wr.png`
-- `PROFLUPINMIND_LOGO_WIDTH` default: `96`
-- `PROFLUPINMIND_LOGO_HEIGHT` default: `38`
-
-## Client config snippets
-
-SSE:
-
-```json
-{
-  "mcpServers": {
-    "proflupinmind": {
-      "type": "sse",
-      "url": "http://127.0.0.1:8890/sse"
-    }
-  }
-}
-```
-
-Stdio:
+The server is launched directly by Claude Code using stdio:
 
 ```json
 {
@@ -79,29 +48,90 @@ Stdio:
     "proflupinmind": {
       "type": "stdio",
       "command": "/home/kali/Desktop/kaliwithAI/.venv/bin/python",
-      "args": ["/home/kali/Desktop/kaliwithAI/mcp_server.py", "--transport", "stdio"]
+      "args": [
+        "/home/kali/Desktop/kaliwithAI/mcp_server.py",
+        "--transport",
+        "stdio"
+      ],
+      "env": {
+        "PROFLUPINMIND_LOGO_MODE": "auto",
+        "PROFLUPINMIND_SHOW_STDIO_BANNER": "1",
+        "PROFLUPINMIND_MIRROR_RAW_OUTPUT": "1",
+        "PROFLUPINMIND_RAW_OUTPUT_LOG": "/home/kali/Desktop/kaliwithAI/proflupinmind.raw.log",
+        "PROFLUPINMIND_EVENTS_LOG": "/home/kali/Desktop/kaliwithAI/proflupinmind.events.jsonl"
+      }
     }
   }
 }
 ```
 
-## Health checks
+`PROFLUPINMIND_SHOW_STDIO_BANNER=1` shows the startup card without touching stdout, which is reserved for the MCP JSON channel. The banner is written to the controlling terminal when available and mirrored to the raw log.
 
-```bash
-curl -s http://127.0.0.1:8890/health
-curl -s http://127.0.0.1:8887/health
+## Watch Raw Tool Output
+
+Claude Code starts MCP servers as background stdio processes, so there may not be a separate MCP server terminal window. This project mirrors the live terminal stream to:
+
+```text
+/home/kali/Desktop/kaliwithAI/proflupinmind.raw.log
 ```
 
-## Tool inventory
+Open a VS Code terminal and run:
 
 ```bash
-python3 -u -c "from tools.registry import TOOL_REGISTRY; print(len(TOOL_REGISTRY))"
+tail -f /home/kali/Desktop/kaliwithAI/proflupinmind.raw.log
 ```
 
-Current count: `173`
+When Claude Code starts the ProfLupinMind MCP server, the logo/startup card appears there. When Claude Code runs a ProfLupinMind MCP tool, the raw command output appears there live.
 
-## Troubleshooting
+For the old visual terminal feel with the logo and startup card, run:
 
-- If logo doesn’t show: ensure `chafa` is installed or set `PROFLUPINMIND_LOGO_MODE=static`.
-- If Flask port busy: free `127.0.0.1:8887` or stop conflicting process.
-- If MCP port busy: run another port, e.g. `--port 8891`.
+```bash
+cd /home/kali/Desktop/kaliwithAI
+.venv/bin/python proflupinmind_console.py
+```
+
+This is only a viewer. Claude Code still starts and controls the real MCP server.
+
+Logo modes:
+
+```text
+auto   = use chafa image rendering when available
+chafa  = require chafa image rendering
+off    = hide the logo
+```
+
+## Use in VS Code
+
+1. Open this folder in VS Code.
+2. Start Claude Code from the project folder.
+3. Approve the project MCP server when Claude Code asks about `.mcp.json`.
+4. In Claude Code, run:
+
+```text
+/mcp
+```
+
+You should see `proflupinmind` connected.
+
+Useful CLI checks:
+
+```bash
+claude mcp list
+claude mcp get proflupinmind
+```
+
+## Manual Smoke Test
+
+Run this if you want to verify the server can start in Claude Code mode:
+
+```bash
+timeout 3 .venv/bin/python mcp_server.py --transport stdio
+```
+
+When run outside an MCP client, stdio mode may exit immediately because stdin is closed. That is fine. It should not show a Python traceback.
+
+## Notes
+
+- Do not run a separate SSE server for Claude Code. Claude Code starts this server through `.mcp.json`.
+- Keep usage local and authorized.
+- Reports are generated from saved sessions under `reports/output`.

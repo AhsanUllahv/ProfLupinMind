@@ -4,10 +4,15 @@
       "type": "stdio",
       "command": "/home/kali/Desktop/kaliwithAI/.venv/bin/python",
       "args": [
-        "/home/kali/Desktop/kaliwithAI/mcp_server.py"
+        "/home/kali/Desktop/kaliwithAI/mcp_server.py",
+        "--transport",
+        "stdio"
       ],
       "env": {
-        "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}"
+        "PROFLUPINMIND_LOGO_MODE": "off",
+        "PROFLUPINMIND_SHOW_STDIO_BANNER": "0",
+        "PROFLUPINMIND_MIRROR_RAW_OUTPUT": "1",
+        "PROFLUPINMIND_RAW_OUTPUT_LOG": "/home/kali/Desktop/kaliwithAI/proflupinmind.raw.log"
       }
     }
   }

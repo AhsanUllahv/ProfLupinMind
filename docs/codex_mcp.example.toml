@@ -1,6 +1,0 @@
-[mcp_servers.proflupinmind]
-command = "/home/kali/Desktop/kaliwithAI/.venv/bin/python"
-args = ["/home/kali/Desktop/kaliwithAI/mcp_server.py"]
-
-[mcp_servers.proflupinmind.env]
-ANTHROPIC_API_KEY = "sk-ant-api03-your-real-key-here"

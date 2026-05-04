@@ -10,8 +10,10 @@ Usage (standalone):
 Or imported and started in a thread by mcp_server.py automatically.
 """
 import logging
+import hmac
 import os
 import pty
+import re
 import signal
 import subprocess
 import sys
@@ -110,12 +112,50 @@ PORT = int(os.environ.get("PROFLUPINMIND_API_PORT", 8887))
 HOST = os.environ.get("PROFLUPINMIND_API_HOST", "127.0.0.1")
 VERSION = "2.0.0"
 _START = time.time()
+ALLOW_RAW_COMMAND = os.environ.get("PROFLUPINMIND_ALLOW_RAW_COMMAND", "0").lower() in {"1", "true", "yes"}
+REQUIRE_API_KEY = os.environ.get("PROFLUPINMIND_REQUIRE_API_KEY", "0").lower() in {"1", "true", "yes"}
+API_KEY = os.environ.get("PROFLUPINMIND_API_KEY", "")
 
 # Extra PATH so Go-based tools (httpx, nuclei, subfinder, …) are found
 _TOOL_PATHS = ["/home/kali/go/bin", "/usr/local/bin", "/usr/local/go/bin"]
 _cur_path = os.environ.get("PATH", "")
 _extra = ":".join(p for p in _TOOL_PATHS if p not in _cur_path)
 _ENV = {**os.environ, "PATH": f"{_extra}:{_cur_path}" if _extra else _cur_path}
+_SHELL_META_RE = re.compile(r"[;&|`$<>\n\r]")
+
+
+def _validate_payload_value(value, path: str = "body") -> None:
+    if isinstance(value, str):
+        if _SHELL_META_RE.search(value):
+            raise ValueError(f"{path} contains blocked shell metacharacters")
+        return
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            _validate_payload_value(item, f"{path}[{idx}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _validate_payload_value(item, f"{path}.{key}")
+
+
+@app.before_request
+def enforce_request_safety():
+    if request.path == "/health":
+        return None
+
+    if REQUIRE_API_KEY:
+        provided = request.headers.get("X-API-Key", "")
+        if not API_KEY or not hmac.compare_digest(provided, API_KEY):
+            return jsonify({"error": "unauthorized"}), 401
+
+    if request.method in {"POST", "PUT", "PATCH"}:
+        payload = request.get_json(silent=True)
+        if isinstance(payload, dict):
+            try:
+                _validate_payload_value(payload)
+            except ValueError as exc:
+                return jsonify({"error": "unsafe input blocked", "detail": str(exc)}), 400
+    return None
 
 
 # ============================================================================
@@ -243,6 +283,11 @@ def health():
 
 @app.route("/api/command", methods=["POST"])
 def command():
+    if not ALLOW_RAW_COMMAND:
+        return jsonify({
+            "error": "disabled endpoint",
+            "detail": "Set PROFLUPINMIND_ALLOW_RAW_COMMAND=1 to enable /api/command",
+        }), 403
     p = request.json or {}
     cmd = p.get("command", "")
     if not cmd:

@@ -3,6 +3,7 @@ import shlex
 import unittest
 
 import mcp_server
+from core.output_parser import parse as parse_output
 
 
 class MCPServerCoreTests(unittest.TestCase):
@@ -17,7 +18,18 @@ class MCPServerCoreTests(unittest.TestCase):
         target = "https://example.com/a path/?q=1&x=2"
         command = mcp_server._build_command("nuclei", target, "-severity low")
 
-        self.assertEqual(command, f"nuclei -severity low -u {shlex.quote(target)}")
+        self.assertEqual(command, f"nuclei -severity low -u {shlex.quote(target)} -json -silent")
+
+    def test_web_examples_do_not_double_prefix_scheme(self):
+        command = mcp_server._build_command("gobuster", "https://example.com", "")
+
+        self.assertIn("-u https://example.com", command)
+        self.assertNotIn("http://https://", command)
+
+    def test_domain_tools_strip_url_to_hostname(self):
+        command = mcp_server._build_command("subfinder", "https://app.example.com/path", "")
+
+        self.assertEqual(command, "subfinder -d app.example.com -silent")
 
     def test_workspace_blocks_path_escape(self):
         result = asyncio.run(mcp_server.workspace_write("../escape.txt", "x"))
@@ -52,6 +64,19 @@ class MCPServerCoreTests(unittest.TestCase):
         self.assertIn("health_score", report)
         self.assertGreaterEqual(report["health_score"], 0)
         self.assertLessEqual(report["health_score"], 100)
+
+    def test_directory_parser_handles_feroxbuster_full_url_rows(self):
+        output = "200      GET        10l        20w      123c https://example.com/admin"
+        parsed = parse_output("feroxbuster", output, "https://example.com")
+
+        self.assertEqual(parsed.summary()["urls"], 1)
+        self.assertEqual(parsed.summary()["findings"], 1)
+
+    def test_directory_parser_handles_ffuf_text_rows(self):
+        output = "admin [Status: 200, Size: 1234, Words: 10, Lines: 3]"
+        parsed = parse_output("ffuf", output, "https://example.com")
+
+        self.assertIn("https://example.com/admin", parsed.urls)
 
 
 if __name__ == "__main__":

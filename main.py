@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """ProfLupinMind entry point.
 
-Starts the Flask API server in a background thread (port 8887) and then
-runs the FastMCP server (port 8890 / SSE).  The Flask API handles all
-subprocess execution so live tool output is always visible in the terminal.
+Runs the FastMCP server. The project is configured for Claude Code in VS Code
+through `.mcp.json`, which launches `mcp_server.py --transport stdio`.
 """
 from mcp_server import main
 
