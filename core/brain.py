@@ -92,6 +92,166 @@ _DYNAMIC_TEMPLATE = """## CURRENT SESSION STATE
 {cve_context}
 """
 
+# Tool-selection thinking prompt — lightweight, no history needed.
+_THINK_TEMPLATE = """You are the reasoning brain of an AI-driven penetration tester.
+
+## TARGET
+{target}
+
+## STRATEGY
+{strategy}  (exploration = discover new attack surface | exploitation = dig into known findings)
+
+## WHAT IS KNOWN
+{known}
+
+## WHAT IS MISSING
+{missing}
+
+## CANDIDATE TOOLS  (choose from this list only)
+{candidates}
+
+## ALREADY USED / EXHAUSTED
+{used_tools}
+
+Choose exactly ONE tool from the candidates list. Consider which tool closes the largest gap in knowledge given the current strategy.
+
+Respond ONLY with valid JSON — no markdown, no explanation:
+{{
+  "chosen_tool": "<must be from candidates>",
+  "confidence": 0.0,
+  "hypothesis": "<one sentence: what this tool is expected to reveal>",
+  "strategy": "exploration|exploitation",
+  "reason": "<one sentence: why this tool over the others>",
+  "possible_directions": ["<alt 1>", "<alt 2>", "<alt 3>"]
+}}"""
+
+# Vulnerability chain analysis prompt — reasons about escalation, bypass, pivot.
+_CHAIN_TEMPLATE = """You are analyzing penetration testing findings to identify vulnerability chains.
+
+A vulnerability chain is a sequence of issues that, when combined, creates a larger attack scenario.
+
+## TARGET
+{target}
+
+## FINDINGS
+{findings}
+
+## SERVICES
+{services}
+
+## CREDENTIALS FOUND
+{credentials}
+
+For each chain you identify, reason about:
+- Can this lead to data exposure?
+- Can this escalate privileges?
+- Can this bypass authentication?
+- Can this pivot to another system?
+
+Only include chains with at least two connected findings. Skip speculative chains where evidence is absent.
+
+Respond ONLY with valid JSON — no markdown, no explanation:
+{{
+  "chains": [
+    {{
+      "name": "<descriptive chain name>",
+      "severity": "CRITICAL|HIGH|MEDIUM",
+      "steps": ["<finding type 1>", "<finding type 2>"],
+      "impact": "<concrete impact — what an attacker achieves>",
+      "escalation_path": "<how privileges or access are escalated, or 'none'>",
+      "auth_bypass_potential": false,
+      "pivot_potential": false,
+      "data_exposure_potential": false
+    }}
+  ]
+}}"""
+
+
+# Prompt: decide whether to run another command with the SAME tool or declare it exhausted.
+_NEXT_IN_TOOL_TEMPLATE = """You are controlling a single penetration testing tool and must decide the next command.
+
+## TOOL IN USE
+{tool}
+
+## TARGET
+{target}
+
+## HYPOTHESIS BEING TESTED
+{hypothesis}
+
+## COMMANDS ALREADY RUN WITH THIS TOOL
+{previous_commands}
+
+## LAST COMMAND
+{last_command}
+
+## LAST OUTPUT (truncated to 3000 chars)
+{output}
+
+## CURRENT SESSION KNOWLEDGE
+{context}
+
+Your task: decide the NEXT action using this SAME tool only. Do not switch tools.
+
+Ask yourself:
+- Did the output reveal new hosts, subdomains, paths, parameters, ports, or services this tool can probe?
+- Can refining flags (depth, wordlist, intensity, port range, extensions) extract genuinely new evidence?
+- Have all meaningful variants been tried and are we only seeing duplicate or empty results?
+
+Return "continue" with a SPECIFIC new options string if there is clear new evidence to pursue.
+Return "exhausted" if this tool has extracted all the insight it can from this target.
+
+Respond ONLY with valid JSON — no markdown, no explanation:
+{{
+  "action": "continue|exhausted",
+  "options": "<just the flags/options part for the next command if continue, empty string if exhausted>",
+  "reason": "<one sentence: specific justification — what new evidence this will reveal or why tool is done>",
+  "new_hypothesis": "<updated hypothesis if continue, empty if exhausted>",
+  "expected_new_evidence": "<what this next command is expected to reveal, empty if exhausted>"
+}}"""
+
+# Prompt: final synthesis after all tools are exhausted.
+_FINAL_ANALYSIS_TEMPLATE = """You are a senior penetration tester writing the final analysis of a completed security assessment.
+
+## TARGET
+{target}
+
+## TOOLS USED AND THEIR OUTCOMES
+{tool_summaries}
+
+## ALL FINDINGS
+{findings}
+
+## VULNERABILITY CHAINS IDENTIFIED
+{chains}
+
+## ATTACK SURFACE
+Ports: {ports}
+Services: {services}
+Web endpoints discovered: {url_count}
+CVEs identified: {cves}
+Credential indicators found: {credential_count}
+
+Synthesize a complete final assessment. Be specific and concrete — reference actual findings where possible.
+
+Respond ONLY with valid JSON — no markdown, no explanation:
+{{
+  "executive_narrative": "<professional 3–5 sentence risk summary suitable for a non-technical stakeholder — state what was found and what risk it represents>",
+  "methodology_narrative": "<2–3 sentences describing how the agent approached the target: what drove tool selection, what strategy was used, what was discovered along the way>",
+  "top_risks": [
+    {{
+      "rank": 1,
+      "title": "<concise risk title>",
+      "why_critical": "<specific impact and exploitability reasoning based on the actual findings>",
+      "severity": "CRITICAL|HIGH|MEDIUM|LOW"
+    }}
+  ],
+  "overall_exploitability": "trivial|easy|moderate|hard|very_hard",
+  "exploitability_reasoning": "<two sentences explaining how easily an attacker could achieve meaningful impact based on discovered findings>",
+  "assessment_gaps": ["<specific area not fully explored or tested>"],
+  "recommended_next_steps": ["<specific actionable recommendation tied to a finding>"]
+}}"""
+
 
 class Brain:
     def __init__(self, api_key: str, model: str = "claude-sonnet-4-6"):
@@ -181,6 +341,133 @@ class Brain:
         content = response.content[0].text
         self.history.append({"role": "assistant", "content": content})
         return self._parse_json(content)
+
+    async def think(
+        self,
+        target: str,
+        known: str,
+        missing: str,
+        candidates: list[str],
+        used_tools: set[str],
+        strategy: str,
+    ) -> dict:
+        """AI-driven tool selection: choose the next tool from current evidence."""
+        prompt = _THINK_TEMPLATE.format(
+            target=target,
+            strategy=strategy,
+            known=known,
+            missing=missing,
+            candidates="\n".join(f"- {t}" for t in candidates),
+            used_tools=", ".join(sorted(used_tools)) if used_tools else "none yet",
+        )
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=512,
+            system=[{"type": "text", "text": self._static_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return self._parse_json(response.content[0].text)
+
+    async def analyze_chains(self, target: str, context) -> list[dict]:
+        """AI-driven vulnerability chain analysis with escalation/bypass/pivot reasoning."""
+        if not context.findings:
+            return []
+        findings_text = "\n".join(
+            f"- [{f.severity}] {f.type}: {f.detail} (tool: {f.tool})"
+            for f in context.findings
+        )
+        services_text = (
+            "\n".join(f"- {k}: {v}" for k, v in list(context.services.items())[:20])
+            or "none"
+        )
+        creds_text = f"{len(context.credentials)} credential(s) found" if context.credentials else "none"
+        prompt = _CHAIN_TEMPLATE.format(
+            target=target,
+            findings=findings_text,
+            services=services_text,
+            credentials=creds_text,
+        )
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=1024,
+            system=[{"type": "text", "text": self._static_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        result = self._parse_json(response.content[0].text)
+        return result.get("chains", [])
+
+    async def decide_next_in_tool(
+        self,
+        tool: str,
+        target: str,
+        last_command: str,
+        output: str,
+        hypothesis: str,
+        previous_commands: list[str],
+        context: SessionContext,
+    ) -> dict:
+        """Ask AI: given the last output, run another command with the SAME tool or declare exhaustion?"""
+        truncated = output[:3000] + ("\n...[output truncated]" if len(output) > 3000 else "")
+        prev = "\n".join(f"  - {c}" for c in previous_commands[-5:]) or "  none yet"
+        prompt = _NEXT_IN_TOOL_TEMPLATE.format(
+            tool=tool,
+            target=target,
+            hypothesis=hypothesis or "discover everything useful this tool can reveal",
+            previous_commands=prev,
+            last_command=last_command,
+            output=truncated,
+            context=context.to_string(),
+        )
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=512,
+            system=[{"type": "text", "text": self._static_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return self._parse_json(response.content[0].text)
+
+    async def final_analysis(
+        self,
+        target: str,
+        context: SessionContext,
+        tool_summaries: list[dict],
+        chains: list[dict],
+    ) -> dict:
+        """Synthesize all findings into a final assessment narrative."""
+        if not context.findings and not chains:
+            return {}
+        findings_text = "\n".join(
+            f"  [{f.severity}] {f.type}: {f.detail} (tool: {f.tool})"
+            for f in context.findings
+        ) or "  none"
+        chains_text = "\n".join(
+            f"  [{c.get('severity','?')}] {c.get('name','?')}: {c.get('impact','')}"
+            for c in chains[:10]
+        ) or "  none"
+        ts_text = "\n".join(
+            f"  {s.get('tool','?')}: {len(s.get('commands',[]))} cmd(s), "
+            f"{len(s.get('discoveries',[]))} discovery(ies) — {s.get('reason_to_stop','')}"
+            for s in tool_summaries
+        ) or "  none"
+        all_ports = sorted({p for ports in context.open_ports.values() for p in ports})
+        prompt = _FINAL_ANALYSIS_TEMPLATE.format(
+            target=target,
+            tool_summaries=ts_text,
+            findings=findings_text,
+            chains=chains_text,
+            ports=", ".join(all_ports) or "none",
+            services=", ".join(f"{k}: {v}" for k, v in list(context.services.items())[:10]) or "none",
+            url_count=len(context.urls),
+            cves=", ".join(context.cves[:10]) or "none",
+            credential_count=len(context.credentials),
+        )
+        response = await self.client.messages.create(
+            model=self.model,
+            max_tokens=1500,
+            system=[{"type": "text", "text": self._static_prompt, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return self._parse_json(response.content[0].text)
 
     def reset(self):
         self.history.clear()

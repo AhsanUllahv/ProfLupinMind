@@ -1,3 +1,4 @@
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -86,6 +87,14 @@ class ReportGenerator:
             grouped = _group_findings(findings_data)
             cves = _extract_cves(findings_data)
 
+            # Extract scan-level metadata written by autonomous_deep_scan.
+            try:
+                ctx_data = json.loads(session.context_json or "{}")
+                scan_meta = ctx_data.get("_scan_meta", {})
+            except Exception:
+                scan_meta = {}
+
+            final_analysis = scan_meta.get("final_analysis", {})
             return {
                 "session": session,
                 "findings": findings_data,
@@ -97,6 +106,16 @@ class ReportGenerator:
                 "risk_rating": _risk_rating(severity_counts),
                 "remediations": [_remediation_for(f) for f in findings_data],
                 "severity_order": SEVERITY_ORDER,
+                # Scan-engine metadata (populated by autonomous_deep_scan)
+                "vulnerability_chains": scan_meta.get("vulnerability_chains", []),
+                "attack_surface": scan_meta.get("attack_surface", {}),
+                "tool_summaries": scan_meta.get("tool_summaries", []),
+                "phases_completed": scan_meta.get("phases_completed", []),
+                "stop_reason": scan_meta.get("stop_reason", ""),
+                "total_scans": scan_meta.get("total_scans", 0),
+                "duration_seconds": scan_meta.get("duration_seconds", 0),
+                # AI final analysis narrative (populated after all tools exhausted)
+                "final_analysis": final_analysis,
             }
 
     def _write_pdf(self, html_path: Path, slug: str) -> Path | None:

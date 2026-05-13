@@ -101,6 +101,32 @@
       margin: 8px 0;
       padding: 8px 10px;
     }
+    .chain {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--high);
+      margin: 12px 0;
+      padding: 10px 12px;
+    }
+    .chain.CRITICAL { border-left-color: var(--critical); }
+    .chain.HIGH     { border-left-color: var(--high); }
+    .chain.MEDIUM   { border-left-color: var(--medium); }
+    .chain-steps {
+      background: var(--panel);
+      border-radius: 3px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+      margin: 6px 0 0;
+      padding: 5px 8px;
+    }
+    .pill {
+      border-radius: 10px;
+      display: inline-block;
+      font-size: 11px;
+      margin-right: 4px;
+      padding: 2px 8px;
+    }
+    .pill-yes { background: #dcfce7; color: #166534; }
+    .pill-no  { background: #f1f5f9; color: var(--muted); }
     @page {
       margin: 22mm;
     }
@@ -119,6 +145,15 @@
 
   <h2>Executive Summary</h2>
   <p>{{ executive_summary }}</p>
+  {% if final_analysis and final_analysis.executive_narrative %}
+  <blockquote style="border-left:4px solid var(--line);margin:12px 0;padding:8px 14px;background:var(--panel);color:var(--ink);">
+    <strong>AI Assessment:</strong> {{ final_analysis.executive_narrative }}
+  </blockquote>
+  {% endif %}
+  {% if final_analysis and final_analysis.overall_exploitability %}
+  <p><strong>Overall exploitability:</strong> <code>{{ final_analysis.overall_exploitability }}</code>
+  {% if final_analysis.exploitability_reasoning %} — {{ final_analysis.exploitability_reasoning }}{% endif %}</p>
+  {% endif %}
 
   <h2>Severity Breakdown</h2>
   <table>
@@ -129,6 +164,104 @@
       {% endfor %}
     </tbody>
   </table>
+
+  <h2>Methodology</h2>
+  {% if final_analysis and final_analysis.methodology_narrative %}
+  <p>{{ final_analysis.methodology_narrative }}</p>
+  {% else %}
+  <p>This assessment was conducted using ProfLupinMind's agent-driven single-tool deep exploration pipeline. The system treats each target as completely unknown at start, selects tools based on evidence rather than a fixed sequence, exhausts each tool before moving to the next, and actively connects findings into vulnerability chains.</p>
+  {% endif %}
+  {% if phases_completed %}
+  <p><strong>Phases executed ({{ phases_completed | length }}):</strong></p>
+  <ul>
+    {% for phase in phases_completed %}<li><code>{{ phase }}</code></li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if tool_summaries %}
+  <table>
+    <thead><tr><th>Tool</th><th>Commands</th><th>Discoveries</th><th>Outcome</th></tr></thead>
+    <tbody>
+      {% for ts in tool_summaries %}
+      <tr>
+        <td><code>{{ ts.tool }}</code></td>
+        <td>{{ ts.commands | length }}</td>
+        <td>{{ ts.discoveries | length }}</td>
+        <td>{{ ts.reason_to_stop if ts.reason_to_stop else ("useful" if ts.useful else "no new evidence") }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  {% if total_scans %}
+  <p class="muted">Total commands: <strong>{{ total_scans }}</strong> &nbsp;|&nbsp; Duration: <strong>{{ duration_seconds }}s</strong> &nbsp;|&nbsp; Stop reason: {{ stop_reason }}</p>
+  {% endif %}
+
+  <h2>Attack Surface</h2>
+  {% if attack_surface and (attack_surface.ports or attack_surface.services or attack_surface.urls) %}
+    {% if attack_surface.ports %}
+    <p><strong>Open ports:</strong> {{ attack_surface.ports | join(", ") }}</p>
+    {% endif %}
+    {% if attack_surface.services %}
+    <table>
+      <thead><tr><th>Endpoint</th><th>Service</th></tr></thead>
+      <tbody>
+        {% for endpoint, service in attack_surface.services.items() %}
+        <tr><td><code>{{ endpoint }}</code></td><td>{{ service }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if attack_surface.cves %}
+    <p><strong>CVEs identified:</strong> {{ attack_surface.cves | join(", ") }}</p>
+    {% endif %}
+    {% if attack_surface.credentials %}
+    <p><strong>Credential indicators found:</strong> {{ attack_surface.credentials | length }}</p>
+    {% endif %}
+    {% if attack_surface.urls %}
+    <p><strong>Web endpoints ({{ attack_surface.urls | length }} total):</strong></p>
+    <ul>
+      {% for url in attack_surface.urls[:20] %}<li><code>{{ url }}</code></li>{% endfor %}
+      {% if attack_surface.urls | length > 20 %}<li class="muted"><em>...and {{ attack_surface.urls | length - 20 }} more</em></li>{% endif %}
+    </ul>
+    {% endif %}
+  {% else %}
+    <p>Attack surface data is not available. Run <code>autonomous_deep_scan</code> to populate this section.</p>
+  {% endif %}
+
+  {% if final_analysis and final_analysis.top_risks %}
+  <h2>Top Risks</h2>
+  {% for risk in final_analysis.top_risks %}
+  <div class="finding" style="border-left-color: var(--{{ risk.severity | lower }}, var(--info));">
+    <strong>{{ risk.rank }}. {{ risk.title }}</strong>
+    <span class="badge {{ risk.severity }}" style="margin-left:8px;">{{ risk.severity }}</span>
+    <p style="margin-top:6px;">{{ risk.why_critical }}</p>
+  </div>
+  {% endfor %}
+  {% endif %}
+
+  <h2>Vulnerability Chains</h2>
+  {% if vulnerability_chains %}
+    {% for chain in vulnerability_chains %}
+    <div class="chain {{ chain.severity }}">
+      <strong>{{ loop.index }}. {{ chain.name }}</strong>
+      <span class="badge {{ chain.severity }}" style="margin-left:8px;">{{ chain.severity }}</span>
+      <p>{{ chain.impact }}</p>
+      {% if chain.escalation_path is defined and chain.escalation_path and chain.escalation_path != "none" %}
+      <p><strong>Escalation path:</strong> {{ chain.escalation_path }}</p>
+      {% endif %}
+      {% if chain.steps %}
+      <div class="chain-steps">{{ chain.steps | join(" → ") }}</div>
+      {% endif %}
+      <p style="margin-top:8px;">
+        <span class="pill {{ 'pill-yes' if chain.auth_bypass_potential is defined and chain.auth_bypass_potential else 'pill-no' }}">Auth bypass: {{ "Yes" if chain.auth_bypass_potential is defined and chain.auth_bypass_potential else "No" }}</span>
+        <span class="pill {{ 'pill-yes' if chain.pivot_potential is defined and chain.pivot_potential else 'pill-no' }}">Pivot: {{ "Yes" if chain.pivot_potential is defined and chain.pivot_potential else "No" }}</span>
+        <span class="pill {{ 'pill-yes' if chain.data_exposure_potential is defined and chain.data_exposure_potential else 'pill-no' }}">Data exposure: {{ "Yes" if chain.data_exposure_potential is defined and chain.data_exposure_potential else "No" }}</span>
+      </p>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p>No vulnerability chains were identified. Either no findings were connected, or <code>autonomous_deep_scan</code> was not used for this session.</p>
+  {% endif %}
 
   <h2>Findings</h2>
   {% if findings %}
@@ -196,5 +329,21 @@
   {% else %}
     <p>No commands were recorded for this session.</p>
   {% endif %}
+  {% if final_analysis and (final_analysis.recommended_next_steps or final_analysis.assessment_gaps) %}
+  <h2>Next Steps &amp; Assessment Gaps</h2>
+  {% if final_analysis.recommended_next_steps %}
+  <h3>Recommended next steps</h3>
+  <ul>
+    {% for step in final_analysis.recommended_next_steps %}<li>{{ step }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if final_analysis.assessment_gaps %}
+  <h3>Areas not fully explored</h3>
+  <ul>
+    {% for gap in final_analysis.assessment_gaps %}<li class="muted">{{ gap }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% endif %}
+
 </body>
 </html>

@@ -157,11 +157,27 @@ class SessionManager:
         data = asdict(context)
         return json.dumps(data)
 
+    def save_scan_meta(self, session_id: str, meta: dict) -> None:
+        """Store scan-level metadata (chains, attack surface, tool summaries) inside context_json."""
+        with self.SessionLocal() as db:
+            row = db.get(PentestSession, session_id)
+            if row is None:
+                return
+            try:
+                existing = json.loads(row.context_json or "{}")
+            except Exception:
+                existing = {}
+            existing["_scan_meta"] = meta
+            row.context_json = json.dumps(existing, ensure_ascii=False)
+            row.updated_at = utc_now()
+            db.commit()
+
     def _context_from_json(self, raw: str) -> SessionContext:
         if not raw:
             return SessionContext()
         data = json.loads(raw)
         findings = [Finding(**item) for item in data.pop("findings", [])]
+        data.pop("_scan_meta", None)  # stored alongside context, not part of SessionContext
         context = SessionContext(**data)
         context.findings = findings
         return context

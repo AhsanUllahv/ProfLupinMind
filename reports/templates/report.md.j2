@@ -1,15 +1,23 @@
 # ProfLupinMind Assessment Report
 
-**Session:** `{{ session.id }}`  
-**Target:** `{{ session.target }}`  
-**Status:** {{ session.status }}  
-**Created:** {{ session.created_at }}  
-**Updated:** {{ session.updated_at }}  
+**Session:** `{{ session.id }}`
+**Target:** `{{ session.target }}`
+**Status:** {{ session.status }}
+**Created:** {{ session.created_at }}
+**Updated:** {{ session.updated_at }}
 **Overall Risk:** {{ risk_rating }}
 
 ## Executive Summary
 
 {{ executive_summary }}
+{% if final_analysis and final_analysis.executive_narrative %}
+
+> **AI Assessment:** {{ final_analysis.executive_narrative }}
+{% endif %}
+{% if final_analysis and final_analysis.overall_exploitability %}
+
+**Overall exploitability:** `{{ final_analysis.overall_exploitability }}`{% if final_analysis.exploitability_reasoning %} — {{ final_analysis.exploitability_reasoning }}{% endif %}
+{% endif %}
 
 ## Severity Breakdown
 
@@ -18,6 +26,105 @@
 {% for severity in severity_order -%}
 | {{ severity }} | {{ severity_counts.get(severity, 0) }} |
 {% endfor %}
+
+## Methodology
+
+{% if final_analysis and final_analysis.methodology_narrative %}{{ final_analysis.methodology_narrative }}{% else %}This assessment was conducted using ProfLupinMind's agent-driven single-tool deep exploration pipeline. The system treats each target as completely unknown at start, selects tools based on evidence rather than a fixed sequence, exhausts each tool before moving to the next, and actively connects findings into vulnerability chains.{% endif %}
+
+{% if phases_completed %}
+**Phases executed ({{ phases_completed | length }}):**
+
+{% for phase in phases_completed -%}
+- `{{ phase }}`
+{% endfor %}
+
+{% endif %}
+{% if tool_summaries %}
+**Tool performance:**
+
+| Tool | Commands | Discoveries | Outcome |
+|---|---:|---:|---|
+{% for ts in tool_summaries -%}
+| `{{ ts.tool }}` | {{ ts.commands | length }} | {{ ts.discoveries | length }} | {{ ts.reason_to_stop if ts.reason_to_stop else ("useful" if ts.useful else "no new evidence") }} |
+{% endfor %}
+
+{% endif %}
+{% if total_scans %}**Total commands:** {{ total_scans }} | **Duration:** {{ duration_seconds }}s | **Stop reason:** {{ stop_reason }}{% endif %}
+
+## Attack Surface
+
+{% if attack_surface and (attack_surface.ports or attack_surface.services or attack_surface.urls) %}
+{% if attack_surface.ports %}
+**Open ports:** {{ attack_surface.ports | join(", ") }}
+
+{% endif %}
+{% if attack_surface.services %}
+**Services discovered:**
+
+| Endpoint | Service |
+|---|---|
+{% for endpoint, service in attack_surface.services.items() -%}
+| `{{ endpoint }}` | {{ service }} |
+{% endfor %}
+
+{% endif %}
+{% if attack_surface.cves %}
+**CVEs identified:** {{ attack_surface.cves | join(", ") }}
+
+{% endif %}
+{% if attack_surface.credentials %}
+**Credential indicators found:** {{ attack_surface.credentials | length }}
+
+{% endif %}
+{% if attack_surface.urls %}
+**Web endpoints ({{ attack_surface.urls | length }} total):**
+
+{% for url in attack_surface.urls[:20] -%}
+- `{{ url }}`
+{% endfor %}
+{% if attack_surface.urls | length > 20 %}
+_...and {{ attack_surface.urls | length - 20 }} more_
+{% endif %}
+{% endif %}
+{% else %}
+Attack surface data is not available. Run `autonomous_deep_scan` to populate this section.
+{% endif %}
+
+{% if final_analysis and final_analysis.top_risks %}
+## Top Risks
+
+{% for risk in final_analysis.top_risks %}
+### {{ risk.rank }}. {{ risk.title }}
+
+**Severity:** {{ risk.severity }}
+
+{{ risk.why_critical }}
+
+{% endfor %}
+{% endif %}
+## Vulnerability Chains
+
+{% if vulnerability_chains %}
+{% for chain in vulnerability_chains %}
+### {{ loop.index }}. {{ chain.name }}
+
+**Severity:** {{ chain.severity }}
+**Impact:** {{ chain.impact }}
+{% if chain.escalation_path is defined and chain.escalation_path and chain.escalation_path != "none" %}
+**Escalation path:** {{ chain.escalation_path }}
+{% endif %}
+{% if chain.steps %}
+**Chain:** {{ chain.steps | join(" → ") }}
+{% endif %}
+
+| Auth bypass | Pivot | Data exposure |
+|---|---|---|
+| {{ "Yes" if chain.auth_bypass_potential is defined and chain.auth_bypass_potential else "No" }} | {{ "Yes" if chain.pivot_potential is defined and chain.pivot_potential else "No" }} | {{ "Yes" if chain.data_exposure_potential is defined and chain.data_exposure_potential else "No" }} |
+
+{% endfor %}
+{% else %}
+No vulnerability chains were identified. Either no findings were connected, or `autonomous_deep_scan` was not used for this session.
+{% endif %}
 
 ## Findings
 
@@ -52,7 +159,7 @@ No CVEs were recorded for this session.
 
 {% if remediations %}
 {% for item in remediations %}
-- **{{ item.severity }}:** {{ item.recommendation }}  
+- **{{ item.severity }}:** {{ item.recommendation }}
   Finding: {{ item.finding }}
 {% endfor %}
 {% else %}
@@ -69,6 +176,26 @@ No remediation items were generated because no findings were recorded.
 {% endfor %}
 {% else %}
 No commands were recorded for this session.
+{% endif %}
+
+{% if final_analysis and (final_analysis.recommended_next_steps or final_analysis.assessment_gaps) %}
+## Next Steps & Assessment Gaps
+
+{% if final_analysis.recommended_next_steps %}
+**Recommended next steps:**
+
+{% for step in final_analysis.recommended_next_steps %}
+- {{ step }}
+{% endfor %}
+{% endif %}
+{% if final_analysis.assessment_gaps %}
+
+**Areas not fully explored:**
+
+{% for gap in final_analysis.assessment_gaps %}
+- {{ gap }}
+{% endfor %}
+{% endif %}
 {% endif %}
 
 ---

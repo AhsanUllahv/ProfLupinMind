@@ -1417,8 +1417,10 @@ async def autonomous_deep_scan(
         logger.info(f"📍 ENTERING PHASE: {phase}")
 
     async def _execute(tool: str, target: str, options: str = "", session_id: str = "") -> dict:
-        if execution_mode.lower() == "manual":
-            command = _build_command(tool, target, options)
+        mode = execution_mode.lower()
+        command = _build_command(tool, target, options)
+
+        if mode == "manual":
             _tty(f"🧠 MANUAL MODE — suggested command only: {command}")
             return {
                 "session_id": session_id or sid,
@@ -1430,6 +1432,28 @@ async def autonomous_deep_scan(
                 "output": "",
                 "exit_code": None,
             }
+
+        if mode == "semi-automatic":
+            # Pre-assess with Guardian: safe commands run automatically,
+            # dangerous ones are surfaced for explicit approval.
+            tool_info = get_tool(tool) or {}
+            ctx_obj, _ = _context_for(target, session_id or sid)
+            guard_decision = Guardian().assess(command, tool, ctx_obj, tool_info.get("dangerous", False))
+            if guard_decision.dangerous:
+                _tty(f"⏸️  SEMI-AUTO PAUSE — dangerous command requires approval:")
+                _tty(f"   {command}")
+                return {
+                    "session_id": session_id or sid,
+                    "success": False,
+                    "blocked": True,
+                    "status": "pending_approval",
+                    "reason": "semi-automatic mode: dangerous command requires explicit approval before execution",
+                    "command": command,
+                    "output": "",
+                    "exit_code": None,
+                    "dangerous": True,
+                }
+
         return await run_kali_tool(
             tool=tool,
             target=target,
@@ -1446,6 +1470,20 @@ async def autonomous_deep_scan(
         session_id=sid,
         on_phase=on_phase,
     )
+
+    # Flush all in-memory findings and scan metadata to the session DB so that
+    # generate_report() and the report templates can read them.
+    sessions.sync_findings(sid, context.findings)
+    sessions.save_scan_meta(sid, {
+        "vulnerability_chains": report.vulnerability_chains,
+        "attack_surface":       report.attack_surface,
+        "tool_summaries":       report.tool_summaries,
+        "phases_completed":     report.phases_completed,
+        "stop_reason":          report.stop_reason,
+        "total_scans":          report.total_scans,
+        "duration_seconds":     round(report.duration, 1),
+        "final_analysis":       report.final_analysis,
+    })
 
     _tty(f"\n{'='*60}")
     _tty(f"✅ AUTONOMOUS DEEP SCAN COMPLETE")

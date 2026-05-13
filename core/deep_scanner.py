@@ -27,6 +27,58 @@ logger = logging.getLogger(__name__)
 SEVERITY_RANK = {"CRITICAL": 5, "HIGH": 4, "MEDIUM": 3, "LOW": 2, "INFO": 1}
 WEB_PORTS = {"80", "443", "8080", "8443", "8000", "8888", "3000", "5000", "9000"}
 
+_FEEDBACK_PATH = Path.home() / ".proflupinmind" / "tool_feedback.json"
+
+
+class ToolFeedbackStore:
+    """Persists per-tool effectiveness scores across runs so future scans prioritise proven tools."""
+
+    def __init__(self, path: Path = _FEEDBACK_PATH) -> None:
+        self._path = path
+        self._data: dict[str, Any] = self._load()
+
+    def _load(self) -> dict[str, Any]:
+        try:
+            if self._path.exists():
+                return json.loads(self._path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
+    def priority_bonus(self, tool: str) -> int:
+        """Return 0–3 bonus used to re-rank candidate tools based on historical usefulness."""
+        entry = self._data.get(tool, {})
+        runs = entry.get("runs", 0)
+        if runs < 2:
+            return 0
+        useful_ratio = entry.get("useful_runs", 0) / runs
+        avg_delta = entry.get("total_evidence_delta", 0) / runs
+        if useful_ratio >= 0.75 and avg_delta >= 2:
+            return 3
+        if useful_ratio >= 0.5:
+            return 2
+        if useful_ratio >= 0.25:
+            return 1
+        return 0
+
+    def record(self, summaries: list) -> None:
+        """Update effectiveness scores from a completed scan's tool summaries."""
+        for s in summaries:
+            entry = self._data.setdefault(
+                s.tool, {"runs": 0, "useful_runs": 0, "total_evidence_delta": 0}
+            )
+            entry["runs"] += 1
+            if s.useful:
+                entry["useful_runs"] += 1
+            entry["total_evidence_delta"] += len(s.discoveries)
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text(
+                json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+        except Exception as exc:
+            logger.debug("feedback store write failed: %s", exc)
+
 
 @dataclass
 class ScanTask:
@@ -88,6 +140,7 @@ class DeepScanReport:
     vulnerability_chains: list = field(default_factory=list)
     attack_map: dict = field(default_factory=dict)
     stop_reason: str = ""
+    final_analysis: dict = field(default_factory=dict)
 
 
 class DeepScanner:
@@ -132,6 +185,7 @@ class DeepScanner:
         self._attack_map: dict[str, Any] = {"services": {}, "web": [], "findings": [], "relationships": []}
         self._chains: list[dict[str, Any]] = []
         self._events_path = Path("proflupinmind.events.jsonl")
+        self._feedback = ToolFeedbackStore()
 
     async def run(
         self,
@@ -200,7 +254,7 @@ class DeepScanner:
                 empty_tools = 0
 
             self._update_attack_map(target, context)
-            self._build_vulnerability_chains(context)
+            await self._build_vulnerability_chains(context, target)
 
             if empty_tools >= self.MAX_EMPTY_TOOLS:
                 stop_reason = f"diminishing returns: {empty_tools} tools produced no new meaningful evidence"
@@ -208,6 +262,12 @@ class DeepScanner:
             if self._major_surface_explored(context):
                 stop_reason = "major attack surface explored and no higher-value tool remains"
                 break
+
+        # Persist tool effectiveness for future runs before returning.
+        self._feedback.record(self._tool_summaries)
+
+        tool_summaries_raw = [s.__dict__ for s in self._tool_summaries]
+        final_analysis = await self._final_analysis_phase(target, context, tool_summaries_raw)
 
         duration = time.time() - start
         vulns = self._prioritized_vulnerabilities(context)
@@ -222,43 +282,82 @@ class DeepScanner:
             attack_surface=self._attack_surface(context),
             duration=duration,
             scan_history=scan_history,
-            tool_summaries=[s.__dict__ for s in self._tool_summaries],
+            tool_summaries=tool_summaries_raw,
             vulnerability_chains=self._chains,
             attack_map=self._attack_map,
             stop_reason=stop_reason,
+            final_analysis=final_analysis,
         )
 
     async def _think(self, target: str, context, iteration: int) -> AgentDecision:
-        """Thinking phase: choose the next best single tool from evidence."""
+        """Thinking phase: choose the next best single tool from evidence.
+
+        Tries AI-driven selection first (Brain.think); falls back to the
+        deterministic candidate-ordering logic if Brain is unavailable or fails.
+        """
         known = self._known_summary(context)
         missing = self._missing_summary(target, context)
         ratio = self._strategy_ratio(iteration)
         candidates = self._candidate_tools(target, context, ratio)
 
         for used in list(self._used_tools):
-            # Let a tool be revisited only if new high-value evidence appeared after it ran.
             if used in candidates and not self._revisit_is_useful(used, context):
                 candidates.remove(used)
 
         if not candidates:
             return AgentDecision("stop", known, missing, [], "stop", "no useful candidate tools remain", 1.0, "stop", "")
 
-        chosen = candidates[0]
-        confidence = self._confidence_for(chosen, target, context)
         strategy = "exploration" if ratio >= 0.5 else "exploitation"
-        hypothesis = self._hypothesis_for(chosen, context)
-        directions = [self._tool_direction(t, context) for t in candidates[:3]]
 
+        # AI-driven selection: ask the Brain to reason over candidates.
+        # Only worth calling when there is a real choice (>1 candidate).
+        if self.brain and len(candidates) > 1:
+            try:
+                ai = await self.brain.think(
+                    target=target,
+                    known=known,
+                    missing=missing,
+                    candidates=candidates,
+                    used_tools=self._used_tools,
+                    strategy=strategy,
+                )
+                chosen = ai.get("chosen_tool", "")
+                if chosen in candidates:
+                    logger.info("🧠 AI THINK: chose %s (confidence=%.2f) — %s", chosen, ai.get("confidence", 0), ai.get("reason", ""))
+                    self._event("ai_think", {
+                        "chosen_tool": chosen,
+                        "confidence": ai.get("confidence"),
+                        "hypothesis": ai.get("hypothesis"),
+                        "reason": ai.get("reason"),
+                        "possible_directions": ai.get("possible_directions", []),
+                    })
+                    return AgentDecision(
+                        phase="thinking",
+                        known=known,
+                        missing=missing,
+                        possible_directions=ai.get("possible_directions", []),
+                        chosen_tool=chosen,
+                        reason=ai.get("reason", self._tool_direction(chosen, context)),
+                        confidence=float(ai.get("confidence", self._confidence_for(chosen, target, context))),
+                        strategy=ai.get("strategy", strategy),
+                        hypothesis=ai.get("hypothesis", self._hypothesis_for(chosen, context)),
+                    )
+                logger.warning("AI returned tool %r not in candidates %s — falling back", chosen, candidates)
+            except Exception as exc:
+                logger.warning("AI tool selection failed, using deterministic fallback: %s", exc)
+
+        # Deterministic fallback.
+        chosen = candidates[0]
         return AgentDecision(
             phase="thinking",
             known=known,
             missing=missing,
-            possible_directions=directions,
+            possible_directions=[self._tool_direction(t, context) for t in candidates[:3]],
             chosen_tool=chosen,
             reason=self._tool_direction(chosen, context),
-            confidence=confidence,
+            confidence=self._confidence_for(chosen, target, context),
             strategy=strategy,
-            hypothesis=hypothesis,
+            hypothesis=self._hypothesis_for(chosen, context),
         )
 
     async def _run_single_tool_loop(
@@ -271,7 +370,18 @@ class DeepScanner:
         scan_history: list[dict[str, Any]],
         remaining: int,
     ) -> tuple[ToolSummary, int]:
-        """Action phase: keep using one tool until exhausted/dead-ended."""
+        """Action phase: run one tool repeatedly until Brain declares exhaustion.
+
+        Flow each iteration:
+          1. Execute current command.
+          2. Brain.analyze_output() extracts findings from the result.
+          3. Brain.decide_next_in_tool() decides: run another command with the
+             SAME tool (with AI-chosen options) or declare the tool exhausted.
+          4. Fall back to the next static variant when Brain is unavailable or
+             returns a command already seen.
+          5. Stagnant-round detection (2 consecutive no-new-evidence rounds)
+             acts as a final safety net when Brain is not available.
+        """
         tool = decision.chosen_tool
         profile = self.TOOL_PROFILES.get(tool, ToolProfile(tool, "custom tool", [], [], self.max_tool_iterations))
         limit = min(profile.exhaustion_limit, self.max_tool_iterations, remaining)
@@ -279,72 +389,172 @@ class DeepScanner:
         discoveries: list[str] = []
         scans_used = 0
         stagnant_rounds = 0
-        for idx in range(1, limit + 1):
-            # Recompute variants after every result. This is what allows a tool
-            # to dig deeper with fresh evidence instead of running a stale list.
-            variants = self._command_variants(tool, target, context, decision)
-            task = None
-            for candidate in variants:
-                command_key = f"{candidate.tool}:{candidate.options}"
-                if command_key not in self._seen_commands:
-                    task = candidate
-                    break
-            if task is None:
-                return ToolSummary(tool, commands, discoveries, "tool exhausted: no new command variants remain", bool(discoveries)), scans_used
 
-            command_key = f"{task.tool}:{task.options}"
+        # Seed: first unused static variant as the entry-point command.
+        current_task = self._next_static_variant(tool, target, context, decision)
+        if current_task is None:
+            return ToolSummary(tool, commands, discoveries, "tool exhausted: no initial command variant available", False), 0
+
+        for idx in range(1, limit + 1):
+            command_key = f"{current_task.tool}:{current_task.options}"
+
+            # Guard: skip if Brain suggested a command we already ran.
+            if command_key in self._seen_commands:
+                current_task = self._next_static_variant(tool, target, context, decision)
+                if current_task is None:
+                    break
+                command_key = f"{current_task.tool}:{current_task.options}"
+
             self._seen_commands.add(command_key)
 
             before = self._surface_score(context)
-            logger.info("⚡ ACT: [%s %s/%s] %s", tool, idx, limit, task.reason)
+            logger.info("⚡ ACT [%d/%d] %s: %s", idx, limit, tool, current_task.reason)
             self._event("action", {
-                "tool": task.tool,
-                "options": task.options,
-                "reason": task.reason,
-                "hypothesis": task.hypothesis,
-                "confidence": task.confidence,
-                "strategy": task.strategy,
+                "tool": current_task.tool,
+                "options": current_task.options,
+                "reason": current_task.reason,
+                "hypothesis": current_task.hypothesis,
+                "confidence": current_task.confidence,
+                "strategy": current_task.strategy,
             })
-            result = await execute_tool(tool=task.tool, target=target, options=task.options, session_id=session_id)
+
+            result = await execute_tool(
+                tool=current_task.tool, target=target,
+                options=current_task.options, session_id=session_id,
+            )
             scans_used += 1
 
             if result.get("blocked"):
-                self._event("blocked", {"tool": task.tool, "command": result.get("command", ""), "reason": result.get("reason", "")})
-                scan_history.append(self._history_row(task, result, decision, "blocked"))
+                self._event("blocked", {
+                    "tool": current_task.tool,
+                    "command": result.get("command", ""),
+                    "reason": result.get("reason", ""),
+                })
+                scan_history.append(self._history_row(current_task, result, decision, "blocked"))
                 break
 
             output = result.get("output", "") or ""
-            command = result.get("command", f"{task.tool} {task.options} {target}".strip())
+            command = result.get("command", f"{current_task.tool} {current_task.options} {target}".strip())
             commands.append(command)
 
-            await self._analyze(task.tool, command, output, context)
-            self._extract_all(target, output, context, task.tool)
+            # Extract findings from output (regex + structured parser).
+            await self._analyze(current_task.tool, command, output, context)
+            self._extract_all(target, output, context, current_task.tool)
 
             after = self._surface_score(context)
             delta = after - before
             if delta > 0:
-                discoveries.append(f"{task.tool} added {delta} new evidence point(s)")
+                discoveries.append(f"{current_task.tool} added {delta} new evidence point(s)")
                 stagnant_rounds = 0
             else:
                 stagnant_rounds += 1
 
             status_note = "new_evidence" if delta > 0 else "no_new_evidence"
             self._event("result", {
-                "tool": task.tool,
+                "tool": current_task.tool,
                 "command": command,
                 "status": result.get("status", status_note),
                 "exit_code": result.get("exit_code"),
                 "evidence_delta": delta,
                 "parsed": result.get("parsed", {}),
             })
-            scan_history.append(self._history_row(task, result, decision, status_note, delta))
+            scan_history.append(self._history_row(current_task, result, decision, status_note, delta))
 
+            # Stagnant-round safety net (no Brain or last resort).
             if stagnant_rounds >= 2:
-                self._event("exhausted", {"tool": tool, "reason": "dead-end detection: repeated similar/no-new outputs", "commands": commands})
-                return ToolSummary(tool, commands, discoveries, "dead-end detection: repeated similar/no-new outputs", bool(discoveries)), scans_used
+                reason = "dead-end detection: 2 consecutive rounds with no new evidence"
+                self._event("exhausted", {"tool": tool, "reason": reason, "commands": commands})
+                return ToolSummary(tool, commands, discoveries, reason, bool(discoveries)), scans_used
+
+            # ── AI-driven next-command decision ──────────────────────────────
+            if self.brain and idx < limit:
+                try:
+                    next_dec = await self.brain.decide_next_in_tool(
+                        tool=tool,
+                        target=target,
+                        last_command=command,
+                        output=output,
+                        hypothesis=current_task.hypothesis or decision.hypothesis,
+                        previous_commands=commands,
+                        context=context,
+                    )
+                    action = next_dec.get("action", "")
+
+                    if action == "exhausted":
+                        reason = next_dec.get("reason", "AI declared tool exhausted")
+                        logger.info("🧠 BRAIN EXHAUSTED %s — %s", tool, reason)
+                        self._event("exhausted", {"tool": tool, "reason": reason, "commands": commands})
+                        return ToolSummary(tool, commands, discoveries, reason, bool(discoveries)), scans_used
+
+                    if action == "continue":
+                        ai_opts = (next_dec.get("options") or "").strip()
+                        ai_key = f"{tool}:{ai_opts}"
+                        if ai_opts and ai_key not in self._seen_commands:
+                            logger.info(
+                                "🧠 BRAIN NEXT [%s]: %s — %s",
+                                tool, ai_opts[:80], next_dec.get("reason", ""),
+                            )
+                            self._event("ai_next_command", {
+                                "tool": tool,
+                                "options": ai_opts,
+                                "reason": next_dec.get("reason"),
+                                "new_hypothesis": next_dec.get("new_hypothesis"),
+                                "expected_new_evidence": next_dec.get("expected_new_evidence"),
+                            })
+                            current_task = ScanTask(
+                                tool=tool,
+                                options=ai_opts,
+                                reason=next_dec.get("reason", "AI-suggested next command"),
+                                phase="ai_driven",
+                                hypothesis=next_dec.get("new_hypothesis") or current_task.hypothesis,
+                                confidence=decision.confidence,
+                                strategy=decision.strategy,
+                            )
+                            continue
+                        # AI suggested a duplicate — fall through to static.
+
+                except Exception as exc:
+                    logger.warning("Brain.decide_next_in_tool failed: %s", exc)
+
+            # ── Static fallback: recompute with fresh context ─────────────────
+            next_task = self._next_static_variant(tool, target, context, decision)
+            if next_task is None:
+                break
+            current_task = next_task
 
         reason = "all relevant variants tried" if scans_used else "no executable variant remained"
         return ToolSummary(tool, commands, discoveries, reason, bool(discoveries)), scans_used
+
+    def _next_static_variant(self, tool: str, target: str, context, decision: AgentDecision) -> "ScanTask | None":
+        """Return the next unused static command variant for a tool, recomputing with current context."""
+        for sv in self._command_variants(tool, target, context, decision):
+            key = f"{sv.tool}:{sv.options}"
+            if key not in self._seen_commands:
+                return sv
+        return None
+
+    async def _final_analysis_phase(self, target: str, context, tool_summaries_raw: list[dict]) -> dict:
+        """Ask Brain for a final narrative synthesis after all tools are exhausted."""
+        if not self.brain:
+            return {}
+        try:
+            result = await self.brain.final_analysis(
+                target=target,
+                context=context,
+                tool_summaries=tool_summaries_raw,
+                chains=self._chains,
+            )
+            logger.info(
+                "🧠 FINAL ANALYSIS: exploitability=%s top_risks=%d gaps=%d",
+                result.get("overall_exploitability", "?"),
+                len(result.get("top_risks", [])),
+                len(result.get("assessment_gaps", [])),
+            )
+            self._event("final_analysis", result)
+            return result
+        except Exception as exc:
+            logger.warning("Final analysis phase failed: %s", exc)
+            return {}
 
     def _candidate_tools(self, target: str, context, exploration_ratio: float) -> list[str]:
         ports = self._all_ports(context)
@@ -378,6 +588,10 @@ class DeepScanner:
         for tool in ordered:
             if tool not in deduped and tool not in self._dead_ends:
                 deduped.append(tool)
+
+        # Stable-sort by feedback bonus so historically useful tools float up
+        # without disrupting the exploration/exploitation ordering for ties.
+        deduped.sort(key=lambda t: -self._feedback.priority_bonus(t))
         return deduped
 
     def _command_variants(self, tool: str, target: str, context, decision: AgentDecision) -> list[ScanTask]:
@@ -519,16 +733,26 @@ class DeepScanner:
             rows.append({"detail": f.detail, "type": f.type, "severity": f.severity, "tool": f.tool, "priority_score": score})
         return sorted(rows, key=lambda r: r["priority_score"], reverse=True)
 
-    def _build_vulnerability_chains(self, context) -> None:
+    async def _build_vulnerability_chains(self, context, target: str = "") -> None:
+        """Build vulnerability chains using static patterns plus AI reasoning.
+
+        Static patterns provide reliable baseline chains. The AI layer adds
+        escalation/bypass/pivot reasoning that the static rules cannot express.
+        """
         findings = context.findings
         types = {f.type for f in findings}
         chains: list[dict[str, Any]] = []
+
+        # Static patterns — always run, no API dependency.
         if {"exposed_git_repository", "sensitive_data_indicator"} & types and ("admin_surface" in types or context.credentials):
             chains.append({
                 "name": "Source/config exposure to administrative access path",
                 "impact": "Potential leakage of source code or secrets can support authentication bypass, credential reuse, or admin-panel access.",
                 "steps": [f.type for f in findings if f.type in {"exposed_git_repository", "backup_or_dump_file", "sensitive_data_indicator", "admin_surface"}],
                 "severity": "CRITICAL",
+                "auth_bypass_potential": True,
+                "pivot_potential": False,
+                "data_exposure_potential": True,
             })
         if "backup_or_dump_file" in types and (context.credentials or "admin_surface" in types):
             chains.append({
@@ -536,6 +760,9 @@ class DeepScanner:
                 "impact": "Backup/dump exposure may reveal credentials or application internals that can be chained into authenticated access.",
                 "steps": [f.type for f in findings if f.type in {"backup_or_dump_file", "sensitive_data_indicator", "admin_surface"}],
                 "severity": "HIGH",
+                "auth_bypass_potential": True,
+                "pivot_potential": False,
+                "data_exposure_potential": True,
             })
         if "directory_listing" in types and ("backup_or_dump_file" in types or "exposed_git_repository" in types):
             chains.append({
@@ -543,7 +770,21 @@ class DeepScanner:
                 "impact": "Browsable directories can expose hidden sensitive files that would otherwise be difficult to locate.",
                 "steps": [f.type for f in findings if f.type in {"directory_listing", "backup_or_dump_file", "exposed_git_repository"}],
                 "severity": "HIGH",
+                "auth_bypass_potential": False,
+                "pivot_potential": False,
+                "data_exposure_potential": True,
             })
+
+        # AI-driven chain analysis — adds escalation/bypass/pivot reasoning.
+        if self.brain and findings:
+            try:
+                ai_chains = await self.brain.analyze_chains(target or "target", context)
+                if ai_chains:
+                    logger.info("🧠 AI CHAINS: %d chain(s) identified", len(ai_chains))
+                    chains.extend(ai_chains)
+            except Exception as exc:
+                logger.warning("AI chain analysis failed: %s", exc)
+
         self._chains = self._dedupe_chains(chains)
 
     def _update_attack_map(self, target: str, context) -> None:
