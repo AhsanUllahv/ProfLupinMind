@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+import unicodedata
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 os.chdir(PROJECT_ROOT)
@@ -131,6 +132,9 @@ _PORT = _early_parse_int("--port", 8890)
 # ============================================================================
 
 class ProfLupinMindVisualEngine:
+    WIDTH = 108
+    _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
     C = {
         'MATRIX_GREEN':  '\033[38;5;46m',
         'NEON_CYAN':     '\033[38;5;51m',
@@ -144,6 +148,85 @@ class ProfLupinMindVisualEngine:
         'RESET':         '\033[0m',
         'BOLD':          '\033[1m',
     }
+
+    @staticmethod
+    def _plain_len(text: str) -> int:
+        plain = ProfLupinMindVisualEngine._ANSI_RE.sub("", text)
+        width = 0
+        for char in plain:
+            if unicodedata.combining(char):
+                continue
+            if unicodedata.category(char) in {"Cc", "Cf"}:
+                continue
+            width += 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+        return width
+
+    @staticmethod
+    def _pad(text: str, width: int | None = None) -> str:
+        width = ProfLupinMindVisualEngine.WIDTH if width is None else width
+        return text + (" " * max(0, width - ProfLupinMindVisualEngine._plain_len(text)))
+
+    @staticmethod
+    def _center(text: str, width: int | None = None) -> str:
+        width = ProfLupinMindVisualEngine.WIDTH if width is None else width
+        pad = max(0, width - ProfLupinMindVisualEngine._plain_len(text))
+        return (" " * (pad // 2)) + text + (" " * (pad - (pad // 2)))
+
+    @staticmethod
+    def _frame(lines: list[str]) -> str:
+        C = ProfLupinMindVisualEngine.C
+        R = C["RESET"]
+        RED = C["KALI_RED"]
+        width = ProfLupinMindVisualEngine.WIDTH
+        top = f"{RED}╭{'─' * (width + 2)}╮{R}"
+        bottom = f"{RED}╰{'─' * (width + 2)}╯{R}"
+        body = [top]
+        for line in lines:
+            body.append(f"{RED}│{R} {ProfLupinMindVisualEngine._pad(line, width)} {RED}│{R}")
+        body.append(bottom)
+        return "\n".join(body)
+
+    @staticmethod
+    def feature_bar() -> str:
+        C = ProfLupinMindVisualEngine.C
+        R = C["RESET"]
+        BDR = C["ELECTRIC_BLUE"]
+        G = C["MATRIX_GREEN"]
+        Y = C["CYBER_YELLOW"]
+        RED = C["KALI_RED"]
+        text = (
+            f"{Y}⚡{R} {G}AI-Guided Recon{R} | {G}Exploitation{R} | "
+            f"{G}Analysis{R} | {RED}◎{R} {G}Bug Bounty{R} | {G}CTF{R} | "
+            f"{G}Red Team{R} | {G}Security Research{R}"
+        )
+        inner_width = min(
+            ProfLupinMindVisualEngine.WIDTH - 10,
+            max(ProfLupinMindVisualEngine._plain_len(text) + 2, 74),
+        )
+        inner = ProfLupinMindVisualEngine._center(text, inner_width)
+        lines = [
+            f"{BDR}╭{('─' * inner_width)}╮{R}",
+            f"{BDR}│{R}{inner}{BDR}│{R}",
+            f"{BDR}╰{('─' * inner_width)}╯{R}",
+        ]
+        return "\n".join(ProfLupinMindVisualEngine._center(line) for line in lines)
+
+    @staticmethod
+    def shell_prompt(command: str, cwd_label: str | None = None) -> str:
+        C = ProfLupinMindVisualEngine.C
+        R = C["RESET"]
+        CY = C["NEON_CYAN"]
+        BL = "\033[94m"
+        W = C["BRIGHT_WHITE"]
+        GR = C["TERMINAL_GRAY"]
+        G = C["MATRIX_GREEN"]
+        cwd_label = cwd_label or str(PROJECT_ROOT)
+        display_cwd = cwd_label.replace(str(Path.home()), "~")
+        cmd_name, _, cmd_rest = command.partition(" ")
+        return (
+            f"{CY}┌──({GR}.venv{CY})-({BL}kali@kali{CY})-[{W}{display_cwd}{CY}]{R}\n"
+            f"{CY}└─{BL}$ {W}{cmd_name}{R}{GR} {cmd_rest.replace('--', f'{G}--')}{R}"
+        )
 
     @staticmethod
     def terminal_logo() -> str:
@@ -180,8 +263,9 @@ class ProfLupinMindVisualEngine:
         # Optional pre-pass: drop black backdrop and preserve bright strokes.
         magick_bin = shutil.which("magick") or shutil.which("convert")
         if magick_bin is not None:
-            transparent_logo = PROJECT_ROOT / "assets" / "logo.transparent.png"
+            transparent_logo = PROJECT_ROOT / ".cache" / "logo.transparent.png"
             try:
+                transparent_logo.parent.mkdir(parents=True, exist_ok=True)
                 subprocess.run(
                     [
                         magick_bin,
@@ -241,62 +325,80 @@ class ProfLupinMindVisualEngine:
             return ""
 
     @staticmethod
-    def banner() -> str:
+    def banner(command: str | None = None, cwd_label: str | None = None) -> str:
         C   = ProfLupinMindVisualEngine.C
         RST = C['RESET']
         W   = C['BRIGHT_WHITE']
         WB  = C['BRIGHT_WHITE'] + C['BOLD']
-        RC  = C['KALI_RED']
         RCB = C['KALI_RED'] + C['BOLD']
         GR  = C['TERMINAL_GRAY']
-        BDR = C['ELECTRIC_BLUE']
-        G   = C['MATRIX_GREEN']
-        A   = C['NEON_CYAN']
 
-        import subprocess as _sp
-
-        # ── Generate figlet art — "ProfLupin" (white) | "Mind" (red) inline ──
         def _figlet(word: str) -> list[str]:
             try:
-                return _sp.check_output(
+                return subprocess.check_output(
                     ["figlet", "-f", "big", word],
-                    stderr=_sp.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 ).decode().splitlines()
             except Exception:
                 return [word]
 
         lupin_lines = _figlet("ProfLupin")
-        mind_lines  = _figlet("Mind")
-
-        # Pad both to same height (align baselines)
+        mind_lines = _figlet("Mind")
         max_h = max(len(lupin_lines), len(mind_lines))
-        lupin_w = max((len(l) for l in lupin_lines), default=0)
+        lupin_w = max((len(line) for line in lupin_lines), default=0)
         while len(lupin_lines) < max_h:
             lupin_lines.insert(0, "")
         while len(mind_lines) < max_h:
             mind_lines.insert(0, "")
 
-        # Merge side by side on each line
         art = ""
-        for l, m in zip(lupin_lines, mind_lines):
-            art += f"{WB}{l.ljust(lupin_w)}{RST}{RCB}{m}{RST}\n"
+        for left, right in zip(lupin_lines, mind_lines):
+            art += f"{WB}{left.ljust(lupin_w)}{RST}{RCB}{right}{RST}\n"
 
-        # ── Feature box ─────────────────────────────────────────────────
-        box = (
-            f"\n{BDR}╔══════════════════════════════════════════════════════════╗{RST}\n"
-            f"{BDR}║  {A}⚡ AI-Guided Recon  |  Exploitation  |  Analysis        {BDR}  ║{RST}\n"
-            f"{BDR}║  {G}🎯 Bug Bounty  |  CTF  |  Red Team  |  Security Research{BDR}  ║{RST}\n"
-            f"{BDR}╚══════════════════════════════════════════════════════════╝{RST}\n"
-        )
+        command = command or "python3 -u mcp_server.py --transport sse --port 8890"
 
         info = (
             f"\n{GR}  ▸ Initialising ProfLupinMind MCP Server...\n"
             f"  ▸ Tools registry loaded  |  Guardian active  |  Sessions ready{RST}\n"
         )
 
+        title = (
+            f"{ProfLupinMindVisualEngine._center(f'{WB}ProfLupin{RST}{RCB}Mind{RST}')}\n"
+            f"{ProfLupinMindVisualEngine._center(f'{W}AI-DRIVEN OFFENSIVE SECURITY FRAMEWORK{RST}')}"
+        )
         logo = ProfLupinMindVisualEngine.terminal_logo()
-        logo_block = f"{logo}\n" if logo else ""
-        return logo_block + art + box + info
+        logo_block = f"\n{logo}\n" if logo else "\n"
+        body = (
+            f"{title}\n\n"
+            f"{ProfLupinMindVisualEngine.feature_bar()}\n\n"
+            f"{ProfLupinMindVisualEngine.shell_prompt(command, cwd_label)}\n"
+            f"{logo_block}"
+            f"{art}"
+            f"{info}"
+        )
+        return ProfLupinMindVisualEngine._frame(body.splitlines())
+
+    @staticmethod
+    def status_card(title: str, rows: list[tuple[str, str, str, str | None, str | None]]) -> str:
+        C = ProfLupinMindVisualEngine.C
+        R = C["RESET"]
+        B = C["BOLD"]
+        BDR = C["ELECTRIC_BLUE"]
+        G = C["MATRIX_GREEN"]
+        width = ProfLupinMindVisualEngine.WIDTH
+        title_text = f"{B}{G}{title}{R}"
+        lines = [
+            f"{BDR}╭{'─' * width}╮{R}",
+            f"{BDR}│{R}  {ProfLupinMindVisualEngine._pad(title_text, width - 2)}{BDR}│{R}",
+            f"{BDR}├{'─' * width}┤{R}",
+        ]
+        for icon, label, value, label_color, value_color in rows:
+            lc = label_color or C["NEON_CYAN"]
+            vc = value_color or C["BRIGHT_WHITE"]
+            row = f"  {icon:<2}  {lc}{label:<12}{R} {vc}{value}{R}"
+            lines.append(f"{BDR}│{R}{ProfLupinMindVisualEngine._pad(row, width)}{BDR}│{R}")
+        lines.append(f"{BDR}╰{'─' * width}╯{R}")
+        return "\n".join(lines)
 
     @staticmethod
     def progress_bar(progress: float, width: int = 40, pid: int = 0, elapsed: float = 0.0) -> str:
@@ -1204,74 +1306,51 @@ async def smart_scan(
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """
-    AI-driven smart scan: auto-detect target type, select optimal tools,
-    optimize parameters, and execute attack chain.
-    objective: comprehensive | quick | stealth
-    dry_run=True returns the plan without executing tools.
+    Compatibility wrapper for the new agentic scanner.
+
+    The old smart_scan used a fixed attack-chain queue. That conflicts with the
+    new design, so smart_scan now delegates to autonomous_deep_scan and keeps
+    the same external name for Claude/MCP compatibility.
     """
-    logger.info(f"🤖 SMART SCAN: {target} | objective={objective}")
-
-    # 1. Build profile
-    profile = _intelligence.build_profile(target=target)
-    logger.info(f"🔍 PROFILE: type={profile.target_type.value} | risk={profile.risk_level.value} | surface={profile.attack_surface}")
-
-    # 2. Generate attack chain
-    chain = _intelligence.generate_attack_chain(target, profile=profile, objective=objective)
-    logger.info(f"⚔️  CHAIN: {len(chain.steps)} steps | {chain.name}")
+    logger.info(f"🤖 SMART SCAN → AGENTIC DEEP SCAN: {target} | objective={objective}")
 
     if dry_run:
+        context, sid = _context_for(target, session_id)
+        from core.deep_scanner import DeepScanner
+        scanner = DeepScanner(max_scans=1, max_tool_iterations=1, execution_mode="manual")
+
+        async def _noop(tool: str, target: str, options: str = "", session_id: str = "") -> dict:
+            command = _build_command(tool, target, options)
+            return {
+                "session_id": session_id or sid,
+                "blocked": True,
+                "status": "dry_run",
+                "command": command,
+                "output": "",
+                "exit_code": None,
+            }
+
+        report = await scanner.run(target=target, context=context, execute_tool=_noop, session_id=sid)
         return {
-            "dry_run":  True,
-            "profile":  profile.to_dict(),
-            "chain":    chain.to_dict(),
+            "dry_run": True,
+            "session_id": sid,
+            "target": target,
+            "planned_workflow": "agentic_single_tool_deep_loop",
+            "scan_history": report.scan_history,
+            "stop_reason": report.stop_reason,
         }
 
-    # 3. Execute chain
-    context, sid = _context_for(target, session_id)
-    results = []
-    failed_tools: list[str] = []
-
-    for step in chain.steps:
-        if step.condition != "always":
-            logger.info(f"⏭️  SKIPPING conditional step: {step.tool} ({step.condition})")
-            continue
-
-        # Get optimized params
-        params = _intelligence.optimize_params(step.tool, profile)
-        options = params.get("flags", "") or " ".join(f"--{k} {v}" for k, v in params.items() if k not in ("reason",))
-
-        logger.info(f"⚡ SMART STEP [{step.step}/{len(chain.steps)}]: {step.tool} → {step.goal}")
-        outcome = await run_kali_tool(
-            tool=step.tool,
-            target=target,
-            options=options.strip(),
-            session_id=sid,
-            allow_dangerous=allow_dangerous,
-            read_only=read_only,
-        )
-        results.append({"step": step.step, "tool": step.tool, "goal": step.goal, "params": params, "result": outcome})
-
-        # Handle failures with error recovery
-        if outcome.get("exit_code", 0) != 0 and not outcome.get("blocked"):
-            output = outcome.get("output", "")
-            err_ctx = _error_handler.classify(step.tool, outcome.get("command", ""), output, outcome.get("exit_code", 1), outcome.get("duration", 0))
-            failed_tools.append(step.tool)
-            fallback = _degradation.next_tool(_guess_operation(step.tool), failed_tools)
-            if fallback:
-                logger.info(f"🔄 FALLBACK: {step.tool} → {fallback}")
-                fallback_outcome = await run_kali_tool(
-                    tool=fallback, target=target, session_id=sid,
-                    allow_dangerous=allow_dangerous, read_only=read_only,
-                )
-                results[-1]["fallback"] = {"tool": fallback, "result": fallback_outcome}
-
-    logger.info(f"✅ SMART SCAN DONE: {len(results)} steps executed | session={sid}")
-    return {
-        "session_id": sid,
-        "profile":    profile.to_dict(),
-        "chain_name": chain.name,
-        "results":    results,
-    }
+    # Map old objectives to safe limits while preserving the new workflow.
+    max_scans = 8 if objective == "quick" else 18 if objective == "stealth" else 30
+    max_tool_iterations = 2 if objective == "quick" else 3 if objective == "stealth" else 4
+    return await autonomous_deep_scan(
+        target=target,
+        session_id=session_id,
+        max_scans=max_scans,
+        max_tool_iterations=max_tool_iterations,
+        execution_mode="automatic",
+        allow_dangerous=allow_dangerous,
+    )
 
 
 # ============================================================================
@@ -1283,25 +1362,32 @@ async def autonomous_deep_scan(
     target: str,
     session_id: str = "",
     max_scans: int = 30,
+    max_tool_iterations: int = 4,
+    execution_mode: str = "automatic",
     allow_dangerous: bool = False,
 ) -> dict[str, Any]:
     """
-    Autonomous iterative deep scan — scans, analyzes findings with AI, then
-    decides what to scan next based on what was discovered. Keeps digging
-    until no new attack surface is found (convergence) or max_scans is reached.
+    Agent-driven deep scan using the new single-tool-deep-loop pipeline.
 
-    Phase progression: recon → service_enum → vuln_scan → deep_dive
+    The scanner separates thinking from acting, selects one tool based on
+    evidence, keeps refining that same tool until it is exhausted, then moves
+    to the next best tool. It records decision confidence, hypotheses, dead-end
+    detection, prioritized findings, an attack map, and vulnerability chains.
 
-    Returns a full report: all findings, vulnerabilities, attack surface map,
-    scan history, and a per-phase breakdown.
+    execution_mode: automatic | semi-automatic | manual. Manual mode returns
+    the planned command decisions in scan history when commands are blocked by
+    policy/approval layers; automatic mode executes within existing Guardian
+    safety limits.
     """
     from core.deep_scanner import DeepScanner
 
-    logger.info(f"🤖 AUTONOMOUS DEEP SCAN: {target} | max_scans={max_scans}")
+    logger.info(f"🤖 AGENTIC DEEP SCAN: {target} | max_scans={max_scans} | max_tool_iterations={max_tool_iterations} | mode={execution_mode}")
     _tty(f"\n{'='*60}")
-    _tty(f"🤖 AUTONOMOUS DEEP SCAN")
-    _tty(f"   Target    : {target}")
-    _tty(f"   Max scans : {max_scans}")
+    _tty(f"🤖 AGENTIC SINGLE-TOOL DEEP SCAN")
+    _tty(f"   Target      : {target}")
+    _tty(f"   Max scans   : {max_scans}")
+    _tty(f"   Tool depth  : {max_tool_iterations}")
+    _tty(f"   Mode        : {execution_mode}")
     _tty(f"{'='*60}\n")
 
     context, sid = _context_for(target, session_id)
@@ -1316,7 +1402,12 @@ async def autonomous_deep_scan(
     else:
         logger.warning("⚠️  ANTHROPIC_API_KEY not set — running without AI analysis")
 
-    scanner = DeepScanner(brain=brain, max_scans=max_scans)
+    scanner = DeepScanner(
+        brain=brain,
+        max_scans=max_scans,
+        max_tool_iterations=max_tool_iterations,
+        execution_mode=execution_mode,
+    )
 
     def on_phase(phase: str) -> None:
         label = phase.upper().replace("_", " ")
@@ -1326,6 +1417,19 @@ async def autonomous_deep_scan(
         logger.info(f"📍 ENTERING PHASE: {phase}")
 
     async def _execute(tool: str, target: str, options: str = "", session_id: str = "") -> dict:
+        if execution_mode.lower() == "manual":
+            command = _build_command(tool, target, options)
+            _tty(f"🧠 MANUAL MODE — suggested command only: {command}")
+            return {
+                "session_id": session_id or sid,
+                "success": False,
+                "blocked": True,
+                "status": "manual_approval_required",
+                "reason": "manual mode suggests commands without executing them",
+                "command": command,
+                "output": "",
+                "exit_code": None,
+            }
         return await run_kali_tool(
             tool=tool,
             target=target,
@@ -1369,6 +1473,10 @@ async def autonomous_deep_scan(
         "vulnerabilities":  report.vulnerabilities,
         "attack_surface":   report.attack_surface,
         "duration_seconds": round(report.duration, 1),
+        "stop_reason":      report.stop_reason,
+        "tool_summaries":   report.tool_summaries,
+        "vulnerability_chains": report.vulnerability_chains,
+        "attack_map":       report.attack_map,
         "scan_history":     report.scan_history,
     }
 
@@ -3986,7 +4094,7 @@ async def feroxbuster_scan(
     logger.info(f"🦀 FEROXBUSTER: {url} | depth={depth}")
     ext_flag = f"-x {extensions}" if extensions else ""
     # Include -u url in options so _build_command does not re-add -u and quote the URL.
-    options = f"-u {url} -w {wordlist} -d {depth} -t {threads} {ext_flag}".strip()
+    options = f"-u {url} -w {wordlist} -d {depth} -t {threads} {ext_flag} --json -q".strip()
     return await run_kali_tool(tool="feroxbuster", target=url,
                                options=options, session_id=session_id)
 
@@ -4081,8 +4189,12 @@ async def nikto_scan(
     ssl_flag = "-ssl" if ssl else ""
     plugin_flag = f"-Plugins '{plugins}'" if plugins else ""
     tune_flag = f"-Tuning {tuning}" if tuning else ""
-    # Put target directly after -h so additional flags don't displace it.
-    options = f"-h {target} {port_flag} {ssl_flag} {plugin_flag} {tune_flag}".strip()
+    nikto_target = target
+    if port:
+        parsed = urlparse(target if "://" in target else f"//{target}")
+        nikto_target = parsed.hostname or target.split("/", 1)[0]
+    # Nikto accepts either a full URI OR host + -p, but not both.
+    options = f"-h {nikto_target} {port_flag} {ssl_flag} {plugin_flag} {tune_flag}".strip()
     return await run_kali_tool(tool="nikto", target=target,
                                options=options, session_id=session_id)
 
@@ -5694,14 +5806,12 @@ def _value_after(parts: list[str], marker: str) -> str:
 def _startup_card(transport: str, host: str, port: int) -> str:
     C   = ProfLupinMindVisualEngine.C
     R   = C['RESET']
-    BDR = C['ELECTRIC_BLUE']
     A   = C['NEON_CYAN']
     G   = C['MATRIX_GREEN']
     W   = C['BRIGHT_WHITE']
     GR  = C['TERMINAL_GRAY']
     Y   = C['CYBER_YELLOW']
     PU  = C['PURPLE']
-    B   = C['BOLD']
 
     try:
         hostname = socket.gethostname()
@@ -5712,27 +5822,21 @@ def _startup_card(transport: str, host: str, port: int) -> str:
 
     url = f"http://{host}:{port}/sse" if transport == "sse" else "stdio (subprocess)"
 
-    def row(icon: str, label: str, value: str, lc=A, vc=W) -> str:
-        return f"{BDR}║  {lc}{icon}  {label:<14}{R}{vc}{value}{R}\n"
-
-    return (
-        f"\n{BDR}╔══════════════════════════════════════════════════════════╗{R}\n"
-        f"{BDR}║  {B}{G}  PROFLUPINMIND MCP SERVER — ONLINE{R}{BDR}                         ║{R}\n"
-        f"{BDR}╠══════════════════════════════════════════════════════════╣{R}\n"
-        + row("🔌", "Transport", transport)
-        + row("🌐", "Endpoint", url)
-        + row("🖥 ", "Host", hostname, lc=PU, vc=W)
-        + row("📡", "Local IP", local_ip, lc=PU, vc=Y)
-        + row("🕐", "Started", now, lc=GR, vc=GR)
-        + f"{BDR}╠══════════════════════════════════════════════════════════╣{R}\n"
-        + row("📄", "Log File", "proflupinmind.log")
-        + row("📜", "Raw Output", "proflupinmind.raw.log")
-        + row("🛡 ", "Guardian", "Active", vc=G)
-        + row("🗄 ", "Sessions", "SQLite ready", vc=G)
-        + row("✨", "Visual Engine", "Active", vc=G)
-        + f"{BDR}╚══════════════════════════════════════════════════════════╝{R}\n"
-        f"{GR}  💡 tail -f {RAW_OUTPUT_LOG}{R}\n"
+    card = ProfLupinMindVisualEngine.status_card(
+        "LUPINMIND MCP SERVER — ONLINE",
+        [
+            ("⌁", "Transport", transport, A, W),
+            ("◎", "Endpoint", url, A, W),
+            ("▣", "Host", hostname, PU, W),
+            ("⌖", "Local IP", local_ip, PU, Y),
+            ("◷", "Started", now, GR, GR),
+        ],
     )
+    footer = (
+        f"{GR}{'─' * ProfLupinMindVisualEngine.WIDTH}{R}\n"
+        f"{ProfLupinMindVisualEngine._center(f'{G}▣{R} {W}AUTOMATE THE PROCESS.  ANALYZE THE RESULTS.  {C['KALI_RED']}OWN THE OUTCOME.{R}')}"
+    )
+    return f"\n{card}\n\n{footer}\n"
 
 
 def main():
@@ -5746,7 +5850,12 @@ def main():
     show_stdio_banner = os.environ.get("PROFLUPINMIND_SHOW_STDIO_BANNER", "").lower()
     quiet_stdio = args.transport == "stdio" and show_stdio_banner not in {"1", "true", "yes", "on"}
     if not quiet_stdio:
-        banner = ProfLupinMindVisualEngine.banner()
+        command = f"python3 -u mcp_server.py --transport {args.transport}"
+        if args.transport == "sse":
+            command += f" --port {args.port}"
+        if args.host != "127.0.0.1":
+            command += f" --host {args.host}"
+        banner = ProfLupinMindVisualEngine.banner(command=command)
         card = _startup_card(args.transport, args.host, args.port)
         startup_screen = f"{banner}\n{card}"
         if args.transport == "stdio":

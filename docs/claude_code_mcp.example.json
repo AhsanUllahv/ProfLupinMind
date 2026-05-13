@@ -2,9 +2,9 @@
   "mcpServers": {
     "proflupinmind": {
       "type": "stdio",
-      "command": "/home/kali/Desktop/kaliwithAI/.venv/bin/python",
+      "command": "/home/kali/Desktop/ProfLupinMind/.venv/bin/python",
       "args": [
-        "/home/kali/Desktop/kaliwithAI/mcp_server.py",
+        "/home/kali/Desktop/ProfLupinMind/mcp_server.py",
         "--transport",
         "stdio"
       ],
@@ -12,7 +12,7 @@
         "PROFLUPINMIND_LOGO_MODE": "off",
         "PROFLUPINMIND_SHOW_STDIO_BANNER": "0",
         "PROFLUPINMIND_MIRROR_RAW_OUTPUT": "1",
-        "PROFLUPINMIND_RAW_OUTPUT_LOG": "/home/kali/Desktop/kaliwithAI/proflupinmind.raw.log"
+        "PROFLUPINMIND_RAW_OUTPUT_LOG": "/home/kali/Desktop/ProfLupinMind/proflupinmind.raw.log"
       }
     }
   }

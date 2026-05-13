@@ -120,6 +120,7 @@ TOOL_REGISTRY = {
         "description": "Web server vulnerability scanner — dangerous files, outdated software, misconfigs",
         "use_cases": ["web vulnerability scanning", "web server audit", "HTTP testing"],
         "dangerous": False, "requires_root": False, "timeout": 300, "category": "web",
+        "target_flag": "-h",
         "example": "nikto -h <target>",
     },
     "gobuster": {

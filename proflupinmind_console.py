@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import datetime
 import json
 import os
 import re
@@ -53,27 +54,21 @@ def _humanize_stdout(text: str) -> str:
 def _console_card(mode: str, log_path: Path) -> str:
     C = ProfLupinMindVisualEngine.C
     R = C["RESET"]
-    B = C["BOLD"]
-    BDR = C["ELECTRIC_BLUE"]
-    G = C["MATRIX_GREEN"]
     A = C["NEON_CYAN"]
     W = C["BRIGHT_WHITE"]
     GR = C["TERMINAL_GRAY"]
 
-    def row(label: str, value: str, lc=A, vc=W) -> str:
-        return f"{BDR}║  {lc}{label:<14}{R}{vc}{value}{R}\n"
-
-    return (
-        f"\n{BDR}╔══════════════════════════════════════════════════════════╗{R}\n"
-        f"{BDR}║  {B}{G}  PROFLUPINMIND CONSOLE — LIVE EVENT VIEWER{R}{BDR}               ║{R}\n"
-        f"{BDR}╠══════════════════════════════════════════════════════════╣{R}\n"
-        + row("Client", "Claude Code in VS Code")
-        + row("Transport", "stdio")
-        + row("Mode", mode)
-        + row("Log", str(log_path))
-        + f"{BDR}╚══════════════════════════════════════════════════════════╝{R}\n"
-        f"{GR}  Press Ctrl-C to close this viewer. Keyboard input is ignored.{R}\n"
+    card = ProfLupinMindVisualEngine.status_card(
+        "LUPINMIND CONSOLE — LIVE EVENT VIEWER",
+        [
+            ("▣", "Client", "Claude Code in VS Code", A, W),
+            ("⌁", "Transport", "stdio", A, W),
+            ("◈", "Mode", mode, A, W),
+            ("◷", "Started", datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S"), GR, GR),
+            ("◷", "Log", str(log_path), GR, GR),
+        ],
     )
+    return f"{card}\n{GR}  Press Ctrl-C to close this viewer. Waiting for new events.{R}\n"
 
 
 @contextlib.contextmanager
@@ -124,11 +119,7 @@ def _render_event(event: dict) -> str | None:
 
     if typ == "command_started":
         cmd = event.get("command", "")
-        cmd_name, _, cmd_rest = cmd.partition(" ")
-        return (
-            f"\n{CY}┌──({BL}kali@kali{CY})-[~]{R}\n"
-            f"{CY}└─{BL}$ {BL}{cmd_name}{R}{SOFT} {cmd_rest}{R}\n"
-        )
+        return f"\n{ProfLupinMindVisualEngine.shell_prompt(cmd, str(PROJECT_ROOT))}\n"
 
     if typ == "stdout_chunk":
         return f"{SOFT}{event.get('data', '')}{R}"
@@ -144,7 +135,8 @@ def _render_event(event: dict) -> str | None:
         code = event.get("exit_code", -1)
         _ = code
         return (
-            f"\n{CY}┌──({BL}kali@kali{CY})-[~]{R}\n"
+            f"\n{CY}┌──({C['TERMINAL_GRAY']}.venv{CY})-({BL}kali@kali{CY})-"
+            f"[{C['BRIGHT_WHITE']}{str(PROJECT_ROOT).replace(str(Path.home()), '~')}{CY}]{R}\n"
             f"{CY}└─{BL}$ {R}"
         )
 
@@ -210,10 +202,12 @@ def main() -> int:
                         help="Legacy mode: tail the plain-text raw log instead of JSONL events")
     parser.add_argument("--log", default="",
                         help="Override the log file path")
-    parser.add_argument("-n", "--lines", type=int, default=40,
+    parser.add_argument("-n", "--lines", type=int, default=0,
                         help="Number of existing log entries to show before following")
+    parser.add_argument("--clear", action="store_true",
+                        help="Clear the terminal before drawing the console")
     parser.add_argument("--no-clear", action="store_true",
-                        help="Do not clear the terminal before drawing the console")
+                        help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     if args.raw:
@@ -226,9 +220,11 @@ def main() -> int:
     if not log_path.is_absolute():
         log_path = PROJECT_ROOT / log_path
 
-    if not args.no_clear:
-        print("\033[2J\033[H", end="")
-    print(ProfLupinMindVisualEngine.banner())
+    if args.clear and not args.no_clear:
+        print("\033[3J\033[2J\033[H", end="")
+    print(ProfLupinMindVisualEngine.banner(
+        command="python3 -u mcp_server.py --transport sse --port 8890"
+    ))
     print(_console_card(mode, log_path))
     sys.stdout.flush()
 
