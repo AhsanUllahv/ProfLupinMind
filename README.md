@@ -1,5 +1,7 @@
 # ProfLupinMind
 
+![ProfLupinMind landing page](landingpage.jpeg)
+
 ProfLupinMind is a local cybersecurity assistant for authorized security testing on Kali/Linux. It connects an AI or MCP client to common security tools, runs approved tools and workflows against an allowed target, stores the results in local sessions, extracts useful findings, and generates reports.
 
 The project is built for:
