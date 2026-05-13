@@ -152,7 +152,6 @@ Edit `.env` and add your key:
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 ```
 
-Do not commit `.env` to version control.
 
 ### 4. Connect ProfLupinMind to Claude Code or Another MCP Client
 
