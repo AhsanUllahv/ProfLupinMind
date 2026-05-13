@@ -1,11 +1,30 @@
 # Secrets and environment
 .env
 .env.*
+*.env
+*.env.*
 !.env.example
+*.secret
+*.secrets
+secrets/
+credentials/
 *.pem
 *.key
 *.crt
 *.p12
+*.pfx
+*.jks
+*.kdbx
+id_rsa
+id_rsa.*
+id_dsa
+id_dsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+*.ovpn
+*.mobileconfig
 
 # Python artifacts
 __pycache__/
@@ -41,14 +60,60 @@ htmlcov/
 
 # Runtime files
 *.log
+*.log.*
+*.jsonl
 *.sqlite3
+*.sqlite
+*.db
+*.db3
+*.sqlite-*
+*.sqlite3-*
+*.sqlite-journal
+*.sqlite3-journal
+*.sqlite-wal
+*.sqlite3-wal
+*.sqlite-shm
+*.sqlite3-shm
 *.deb
 *.cap
 *.pcap
+*.pcapng
+*.hccapx
+*.hc22000
+*.22000
 sessions/*.sqlite3
+sessions/*.sqlite
+sessions/*.db
+sessions/*.db3
+sessions/*-journal
+sessions/*-wal
+sessions/*-shm
 sessions/*.log
+sessions/*.jsonl
 reports/output/
 output/
+tmp/
+temp/
+*.tmp
+*.bak
+*.old
+*.orig
+
+# Sensitive scan data and credentials
+cracked.json
+*_ips.txt
+*_hosts.txt
+*_targets.txt
+*_creds.txt
+*_credentials.txt
+*_passwords.txt
+*_hashes.txt
+loot/
+captures/
+evidence/
+screenshots/
+scans/
+wordlists/private/
 
 # Local tooling and editor state
 .agents/
